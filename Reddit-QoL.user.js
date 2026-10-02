@@ -88,7 +88,7 @@
                 return;
             }
             seen.add(key);
-            entries.push({ el, url: resolveFull(el) });
+            entries.push({ el, url: resolveFull(el), post: el.closest('shreddit-post') });
         }
         // feed + top post: walk media containers so galleries keep their page order
         document.querySelectorAll('shreddit-post').forEach(post => {
@@ -143,6 +143,13 @@
     let overlay = null;
     let imgEl = null;
     let counterEl = null;
+    let dimsEl = null;
+    let zoomEl = null;
+    let canvasEl = null;
+    let titlebarEl = null;
+    let postCounterEl = null;
+    let titleEl = null;
+    let currentPostEl = null;
     let prevBtn = null;
     let nextBtn = null;
     let keyHandler = null;
@@ -160,7 +167,7 @@
         }
         #rl-viewer .rl-viewer-canvas {
             position: absolute;
-            inset: 0;
+            inset: 0 0 96px 0;
             display: flex;
             align-items: center;
             justify-content: center;
@@ -168,7 +175,8 @@
         }
         #rl-viewer .rl-viewer-img {
             max-width: calc(100vw - 40px);
-            max-height: calc(100vh - 40px);
+            /* leave room for the bottom toolbar so the image never eats into it */
+            max-height: calc(100vh - 136px);
             width: auto;
             height: auto;
             user-select: none;
@@ -184,11 +192,47 @@
         #rl-viewer.rl-panning * {
             cursor: grabbing !important;
         }
-        #rl-viewer .rl-viewer-toolbar {
+        /* two stacked rows: title row above, buttons row sets the width */
+        #rl-viewer .rl-viewer-hud {
             position: fixed;
             bottom: 12px;
             left: 50%;
             transform: translateX(-50%);
+            display: flex;
+            flex-direction: column;
+            align-items: stretch;
+            gap: 4px;
+            z-index: 2147483647;
+        }
+        #rl-viewer .rl-viewer-titlebar {
+            /* absolute above the buttons row: a long title must never stretch the hud width,
+               the bottom row alone defines the panel size */
+            position: absolute;
+            left: 0;
+            right: 0;
+            bottom: calc(100% + 4px);
+            display: flex;
+            align-items: baseline;
+            gap: 6px;
+            padding: 4px 10px;
+            border-radius: 12px;
+            background: rgba(20, 20, 20, 0.85);
+            color: #eee;
+            font: 14px/1.2 sans-serif;
+            overflow: hidden;
+            cursor: pointer;
+        }
+        #rl-viewer .rl-viewer-postcounter {
+            white-space: pre;
+            opacity: 0.85;
+        }
+        #rl-viewer .rl-viewer-title {
+            overflow: hidden;
+            white-space: nowrap;
+            text-overflow: ellipsis;
+            min-width: 0;
+        }
+        #rl-viewer .rl-viewer-toolbar {
             display: flex;
             align-items: center;
             gap: 4px;
@@ -199,8 +243,36 @@
             font: 14px/1 sans-serif;
             z-index: 2147483647;
         }
+        #rl-viewer .rl-viewer-btn:hover {
+            background: rgba(255, 255, 255, 0.18);
+        }
+        #rl-viewer .rl-viewer-btn.rl-disabled {
+            opacity: 0.35;
+            pointer-events: none;
+        }
+        #rl-viewer .rl-viewer-counter,
+        #rl-viewer .rl-viewer-info {
+            font-variant-numeric: tabular-nums;
+        }
+        /* pinned widths: counter/zoom text changes must never shift the buttons */
+        #rl-viewer .rl-viewer-info {
+            width: 168px;
+            display: inline-flex;
+            justify-content: space-between;
+            gap: 6px;
+            white-space: pre;
+        }
+        #rl-viewer .rl-viewer-dims {
+            flex: 1;
+            text-align: left;
+            overflow: hidden;
+        }
+        #rl-viewer .rl-viewer-zoom {
+            width: 5ch;
+            text-align: right;
+        }
         #rl-viewer .rl-viewer-counter {
-            min-width: 52px;
+            min-width: 56px;
             text-align: center;
             opacity: 0.85;
             margin-right: 6px;
@@ -217,13 +289,6 @@
             text-decoration: none;
             font-size: 18px;
             transition: background 0.15s;
-        }
-        #rl-viewer .rl-viewer-btn:hover {
-            background: rgba(255, 255, 255, 0.18);
-        }
-        #rl-viewer .rl-viewer-btn.rl-disabled {
-            opacity: 0.35;
-            pointer-events: none;
         }
     `;
 
@@ -244,14 +309,25 @@
             <div class="rl-viewer-canvas">
                 <img class="rl-viewer-img" alt="">
             </div>
-            <div class="rl-viewer-toolbar">
-                <span class="rl-viewer-counter"></span>
-                <a class="rl-viewer-btn rl-viewer-prev" title="Previous image (←)">‹</a>
-                <a class="rl-viewer-btn rl-viewer-next" title="Next image (→)">›</a>
-                <a class="rl-viewer-btn rl-viewer-open" title="Open the source page">↗</a>
-                <a class="rl-viewer-btn rl-viewer-download" title="Download original">⬇</a>
-                <a class="rl-viewer-btn rl-viewer-close" title="Close (Esc)">×</a>
+            <div class="rl-viewer-hud">
+                <div class="rl-viewer-titlebar">
+                    <span class="rl-viewer-postcounter"></span>
+                    <span class="rl-viewer-title"></span>
+                </div>
+                <div class="rl-viewer-toolbar">
+                    <span class="rl-viewer-info">
+                        <span class="rl-viewer-dims"></span>
+                        <span class="rl-viewer-zoom"></span>
+                    </span>
+                    <span class="rl-viewer-counter"></span>
+                    <a class="rl-viewer-btn rl-viewer-prev" title="Previous image (←)">‹</a>
+                    <a class="rl-viewer-btn rl-viewer-next" title="Next image (→)">›</a>
+                    <a class="rl-viewer-btn rl-viewer-open" title="Open the source page">↗</a>
+                    <a class="rl-viewer-btn rl-viewer-download" title="Download original">⬇</a>
+                    <a class="rl-viewer-btn rl-viewer-close" title="Close (Esc)">×</a>
+                </div>
             </div>`;
+
         imgEl = overlay.querySelector('.rl-viewer-img');
         // нативный браузерный HTML5 drag выключаем на <img> атрибутом (Firefox игнорирует
         // -webkit-user-drag из css) и ещё одним dragstart preventDefault под страховку
@@ -261,8 +337,30 @@
             log('native image drag suppressed');
         });
         counterEl = overlay.querySelector('.rl-viewer-counter');
+        titlebarEl = overlay.querySelector('.rl-viewer-titlebar');
+        postCounterEl = overlay.querySelector('.rl-viewer-postcounter');
+        titleEl = overlay.querySelector('.rl-viewer-title');
+        canvasEl = overlay.querySelector('.rl-viewer-canvas');
+        dimsEl = overlay.querySelector('.rl-viewer-dims');
+        zoomEl = overlay.querySelector('.rl-viewer-zoom');
         prevBtn = overlay.querySelector('.rl-viewer-prev');
         nextBtn = overlay.querySelector('.rl-viewer-next');
+        // click on the title row: close the viewer and reveal the post in the feed
+        titlebarEl.addEventListener('click', e => {
+            e.stopPropagation();
+            const post = currentPostEl;
+            log('titlebar click -> close & scroll to post', !!post);
+            closeViewer();
+            if(post) {
+                post.scrollIntoView({ block: 'start', behavior: 'smooth' });
+            }
+        });
+        // px dimensions in the info span; zoom updates on every transform change
+        imgEl.onload = () => {
+            dimsEl.textContent = `${ imgEl.naturalWidth }×${ imgEl.naturalHeight }`;
+            applyTransform();
+            log('loaded', imgEl.naturalWidth, 'x', imgEl.naturalHeight);
+        };
         overlay.querySelector('.rl-viewer-close').addEventListener('click', closeViewer);
         prevBtn.addEventListener('click', () => nav(-1));
         nextBtn.addEventListener('click', () => nav(1));
@@ -313,7 +411,7 @@
         });
         // click anywhere outside the image closes; the toolbar buttons run their own handlers first
         overlay.addEventListener('click', e => {
-            if(e.target === imgEl || imgEl.contains(e.target) || e.target.closest('.rl-viewer-toolbar')) {
+            if(e.target === imgEl || imgEl.contains(e.target) || e.target.closest('.rl-viewer-hud')) {
                 log('click on image/toolbar — not closing');
                 return;
             }
@@ -359,8 +457,24 @@
         log('wheel zoom', factor, '-> scale =', scale.toFixed(2));
     }
 
+    // zoom % semantics: 100% = one image pixel per screen pixel; the fitted view reports its
+    // actual downscale (e.g. a 4k image on a 2k screen opens as 47%)
+    function currentZoomPercent() {
+        const nw = imgEl.naturalWidth;
+        const nh = imgEl.naturalHeight;
+        if(!nw || !nh || !canvasEl || !canvasEl.clientWidth) {
+            return null;
+        }
+        const fit = Math.min(canvasEl.clientWidth / nw, canvasEl.clientHeight / nh, 1);
+        return Math.round(scale * fit * 100);
+    }
+
     function applyTransform() {
         imgEl.style.transform = `translate(${ panX }px, ${ panY }px) scale(${ scale })`;
+        if(zoomEl) {
+            const p = currentZoomPercent();
+            zoomEl.textContent = p === null ? '' : `${ p }%`;
+        }
     }
 
     // load & display entry `i`
@@ -374,11 +488,23 @@
         panX = 0;
         panY = 0;
         applyTransform();
+        dimsEl.textContent = '';
         imgEl.src = entry.url;
         log('show', i + 1, '/', entries.length, entry.url.slice(0, 80));
         counterEl.textContent = `${ i + 1 } / ${ entries.length }`;
         prevBtn.classList.toggle('rl-disabled', i === 0);
         nextBtn.classList.toggle('rl-disabled', i === entries.length - 1);
+        // title row shows only in the feed: [image-in-post] post title, clipped to fit the bar
+        const inFeed = entry.post && entry.post.closest('shreddit-feed');
+        currentPostEl = entry.post;
+        titlebarEl.style.display = inFeed ? '' : 'none';
+        if(inFeed) {
+            const postImages = entries.filter(e => e.post === entry.post);
+            const postIdx = postImages.indexOf(entry) + 1;
+            postCounterEl.textContent = `[${ postIdx }/${ postImages.length }]`;
+            titleEl.textContent = entry.post.getAttribute('post-title') || '';
+            log('title row:', `[${ postIdx }/${ postImages.length }]`, titleEl.textContent.slice(0, 50));
+        }
         // spec: "opens at its source post URL" — derive permalink from the clicked element
         const post = entry.el && entry.el.closest('shreddit-post');
         overlay.querySelector('.rl-viewer-open').href =
@@ -516,7 +642,7 @@
         }
         if(idx === -1) {
             log('clicked media not in collection, appending');
-            collected.push({ el, url: resolveFull(el) });
+            collected.push({ el, url: resolveFull(el), post: el.closest('shreddit-post') });
             idx = collected.length - 1;
         }
         entries = collected;

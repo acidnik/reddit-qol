@@ -36,6 +36,31 @@ await page.waitForSelector('#rl-viewer img', { timeout: 5000 });
 await page.waitForTimeout(800);
 
 ok(await page.$('#rl-viewer'), 'our overlay opened');
+ok(await page.$eval('#rl-viewer .rl-viewer-canvas', c => getComputedStyle(c).bottom) === '96px', 'canvas reserves the two-row hud');
+
+// feed context: title row [image-in-post/total] + post title, width clipped by the buttons row
+ok(await page.$eval('#rl-viewer .rl-viewer-titlebar', el => el.style.display) !== 'none', 'title row visible in feed');
+const postCounter = await page.$eval('#rl-viewer .rl-viewer-postcounter', el => el.textContent.trim());
+ok(/^\[\d+\/\d+\]$/.test(postCounter), `per-post image counter (${ postCounter })`);
+const postTitle = await page.$eval('#rl-viewer .rl-viewer-title', el => el.textContent.trim());
+ok(postTitle.length > 3, `post title shown (${ postTitle.slice(0, 40) })`);
+const titlebarW = await page.$eval('#rl-viewer .rl-viewer-titlebar', el => Math.round(el.getBoundingClientRect().width));
+const toolbarW = await page.$eval('#rl-viewer .rl-viewer-toolbar', el => Math.round(el.getBoundingClientRect().width));
+ok(Math.abs(titlebarW - toolbarW) <= 2, `title row clipped to toolbar width (${ titlebarW } vs ${ toolbarW })`);
+
+// a very long title must not stretch either row nor move the buttons
+const btnLefts0 = await page.$eval('#rl-viewer .rl-viewer-toolbar', tb =>
+    [...tb.querySelectorAll('.rl-viewer-btn')].map(b => Math.round(b.getBoundingClientRect().left)));
+await page.$eval('#rl-viewer .rl-viewer-title', el => { el.textContent = 'Long '.repeat(120); });
+await page.waitForTimeout(200);
+const titlebarW2 = await page.$eval('#rl-viewer .rl-viewer-titlebar', el => Math.round(el.getBoundingClientRect().width));
+const toolbarW2 = await page.$eval('#rl-viewer .rl-viewer-toolbar', el => Math.round(el.getBoundingClientRect().width));
+const btnLefts1 = await page.$eval('#rl-viewer .rl-viewer-toolbar', tb =>
+    [...tb.querySelectorAll('.rl-viewer-btn')].map(b => Math.round(b.getBoundingClientRect().left)));
+ok(toolbarW2 === toolbarW, `toolbar width unchanged under long title (${ toolbarW } -> ${ toolbarW2 })`);
+ok(titlebarW2 <= toolbarW2 + 2, `title row stays clipped (${ titlebarW2 })`);
+ok(JSON.stringify(btnLefts0) === JSON.stringify(btnLefts1), 'buttons stay put under long title');
+
 ok(await page.$('shreddit-lightbox') === null, 'built-in shreddit-lightbox did not open');
 const overlaySrc = await page.$eval('#rl-viewer img', img => img.src);
 ok(/https:\/\/i\.redd\.it\//.test(overlaySrc), `full-res source used (${ overlaySrc.slice(0, 60) }…)`);
@@ -132,7 +157,76 @@ await page.click('#rl-viewer .rl-viewer-next');
 await page.waitForTimeout(400);
 const count4 = await page.$eval('#rl-viewer .rl-viewer-counter', el => el.textContent.trim());
 ok(count4 !== count1, `next button navigated (${ count4 })`);
-await page.mouse.click(40, 40);
+
+// toolbar info: dims + zoom; buttons must never shift on zoom/nav changes (click-in-place UX)
+const dims = await page.$eval('#rl-viewer .rl-viewer-dims', el => el.textContent.trim());
+ok(/^\d+×\d+$/.test(dims), `dims shown (${ dims })`);
+// 1:1 semantics: open shows the REAL downscale of the fitted image (<100% for big images),
+// and the percent matches fit-to-canvas math
+const zoomAtOpen = await page.$eval('#rl-viewer .rl-viewer-zoom', el => el.textContent.trim());
+const expectedFit = await page.$eval('#rl-viewer .rl-viewer-canvas', c => {
+    const img = c.querySelector('img');
+    return Math.round(Math.min(c.clientWidth / img.naturalWidth, c.clientHeight / img.naturalHeight, 1) * 100);
+});
+const zoomShown = await page.$eval('#rl-viewer .rl-viewer-zoom', el => parseInt(el.textContent, 10));
+ok(zoomShown === expectedFit && zoomShown <= 100, `fit shows actual pixel downscale (${ zoomAtOpen }, fit math = ${ expectedFit }%)`);
+const buttonsBefore = await page.$eval('#rl-viewer .rl-viewer-toolbar', tb =>
+    [...tb.querySelectorAll('.rl-viewer-btn')].map(b => Math.round(b.getBoundingClientRect().left)));
+const zoomBefore = await page.$eval('#rl-viewer .rl-viewer-zoom', el => el.textContent.trim());
+await page.mouse.move(center.x, center.y);
+await page.mouse.wheel(0, -300);
+await page.waitForTimeout(200);
+const zoomAfter = await page.$eval('#rl-viewer .rl-viewer-zoom', el => el.textContent.trim());
+ok(zoomAfter !== zoomBefore && /%$/.test(zoomAfter), `zoom indicator updates (${ zoomBefore } -> ${ zoomAfter })`);
+const buttonsAfter = await page.$eval('#rl-viewer .rl-viewer-toolbar', tb =>
+    [...tb.querySelectorAll('.rl-viewer-btn')].map(b => Math.round(b.getBoundingClientRect().left)));
+ok(JSON.stringify(buttonsBefore) === JSON.stringify(buttonsAfter), `buttons stay put on zoom (${ buttonsAfter.join(',') })`);
+await page.keyboard.press('ArrowRight');
+await page.waitForTimeout(600);
+const buttonsNav = await page.$eval('#rl-viewer .rl-viewer-toolbar', tb =>
+    [...tb.querySelectorAll('.rl-viewer-btn')].map(b => Math.round(b.getBoundingClientRect().left)));
+ok(JSON.stringify(buttonsNav) === JSON.stringify(buttonsBefore), 'buttons stay put on nav');
+const dims2 = await page.$eval('#rl-viewer .rl-viewer-dims', el => el.textContent.trim());
+ok(/^\d+×\d+$/.test(dims2), `dims refresh after nav (${ dims2 })`);
+await page.keyboard.press('ArrowLeft');
+await page.mouse.wheel(0, 300);
+// titlebar styling matches the toolbar row
+const titleFont = await page.$eval('#rl-viewer .rl-viewer-titlebar', el => getComputedStyle(el).fontSize);
+const toolbarFont = await page.$eval('#rl-viewer .rl-viewer-toolbar', el => getComputedStyle(el).fontSize);
+ok(titleFont === toolbarFont, `title row font matches toolbar (${ titleFont })`);
+const titleColor = await page.$eval('#rl-viewer .rl-viewer-titlebar', el => getComputedStyle(el).color);
+const toolbarColor = await page.$eval('#rl-viewer .rl-viewer-toolbar', el => getComputedStyle(el).color);
+ok(titleColor === toolbarColor, `title row color matches toolbar (${ titleColor })`);
+
+// click on the title row: modal closes and the feed scrolls to the post
+await page.click('#rl-viewer .rl-viewer-titlebar');
+await page.waitForTimeout(1500); // smooth scroll needs to settle before the next interactions
+ok(await page.$('#rl-viewer') === null, 'titlebar click closes the modal');
+const postVisible = await page.evaluate(() => {
+    const post = [...document.querySelectorAll('shreddit-post')]
+        .find(p => p.getBoundingClientRect().top >= -10 && p.getBoundingClientRect().top < innerHeight / 2 &&
+            p.querySelector('[slot=post-media-container] img'));
+    return !!post;
+});
+ok(postVisible, 'feed scrolled near the source post');
+
+// pick a point that is verifiably not on the image/toolbar
+const outside = await page.evaluate(() => {
+    const candidates = [
+        [window.innerWidth - 12, 12],
+        [12, 12],
+        [window.innerWidth - 12, window.innerHeight - 70],
+        [12, window.innerHeight - 70]
+    ];
+    for(const [x, y] of candidates) {
+        const el = document.elementFromPoint(x, y);
+        if(el && (el.id === 'rl-viewer' || el.classList.contains('rl-viewer-canvas'))) {
+            return { x, y };
+        }
+    }
+    return { x: candidates[0][0], y: candidates[0][1] };
+});
+await page.mouse.click(outside.x, outside.y);
 await page.waitForTimeout(300);
 ok(await page.$('#rl-viewer') === null, 'click outside closes');
 
@@ -151,6 +245,7 @@ if(await commentImg.count()) {
     await page.waitForSelector('#rl-viewer img', { timeout: 5000 });
     await page.waitForTimeout(600);
     const commentSrc = await page.$eval('#rl-viewer img', img => img.src);
+    ok(await page.$eval('#rl-viewer .rl-viewer-titlebar', el => el.style.display) === 'none', 'title row hidden inside a post page');
     ok(/https:\/\/i\.redd\.it\//.test(commentSrc), `comment media upgraded to full-res (${ commentSrc.slice(0, 70) })`);
     ok(await page.$('shreddit-lightbox') === null, 'lightbox did not open from comment media');
     await page.keyboard.press('Escape');
