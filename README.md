@@ -5,7 +5,7 @@
 
 - improved image viewer. On click on image in feeds or in comments a modal pops up. Scroll to zoom in/out, drag to pan while zoomed, click outside to close, buttons to go to next/prev, inclidng keyboard left/right. Overrides built-in
 - sort by top: hovering Top in the sort dropdown expands a nested time-range submenu (Now/Today/Week/Month/Year/All); picking a range swaps the feed in place (no page reload)
+- show user (post author) on the home feed: u/name link in the post credit bar (author comes from shreddit-post[author])
 
 # TODO
 - load comments in thread without reloading for any nested level
-- show user (post author) on the feed

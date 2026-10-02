@@ -273,6 +273,18 @@
         .rl-sort-sub a:hover {
             background: var(--color-neutral-background-hover, rgba(0, 0, 0, 0.08));
         }
+        .rl-post-author {
+            color: var(--color-neutral-content-weak, #777);
+            font-size: inherit;
+            text-decoration: none;
+        }
+        .rl-post-author:hover {
+            text-decoration: underline;
+        }
+        .rl-post-author-sep {
+            opacity: 0.6;
+            margin: 0 2px;
+        }
         .rl-sub-arrow {
             /* absolutely positioned inside the (relative) Top link: dead-center vertically,
                no layout impact from the 3em glyph */
@@ -836,6 +848,40 @@
         });
     }
 
+    // ==================== post author on the home feed ====================
+
+    // the home feed credit bar shows only the subreddit; the author is right there in the
+    // shreddit-post[author] attribute — surface it as a u/ link next to the subreddit
+    function injectPostAuthors() {
+        document.querySelectorAll('shreddit-post[author]').forEach(post => {
+            if(post.dataset.rlAuthorDone) {
+                return;
+            }
+            const credit = post.querySelector('[slot=credit-bar]');
+            if(!credit) {
+                return;
+            }
+            const author = post.getAttribute('author');
+            const subLink = credit.querySelector('a[href*="/comments/"], a[href^="/r/"], a[href*="/r/"]');
+            if(!subLink || credit.querySelector('.rl-post-author')) {
+                post.dataset.rlAuthorDone = '1';
+                return;
+            }
+            const sep = document.createElement('span');
+            sep.className = 'rl-post-author-sep';
+            sep.textContent = '•';
+            const a = document.createElement('a');
+            a.className = 'rl-post-author';
+            a.href = `/user/${ author }/`;
+            a.textContent = `u/${ author }`;
+            a.addEventListener('click', e => e.stopPropagation());
+            // credit bar layout: subreddit ... time — put the author right after the subreddit
+            subLink.after(sep, a, ' ');
+            post.dataset.rlAuthorDone = '1';
+            log('author chip added:', author, 'in', post.getAttribute('subreddit-prefixed-name') || '');
+        });
+    }
+
     function stripRangeParams(u) {
         ['t', 'screen_view_count', 'ext-referrer'].forEach(p => u.searchParams.delete(p));
         return u;
@@ -888,6 +934,7 @@
             lastSwapUrl = url;
             // the header can re-render lazily after the swap — re-inject on a short schedule
             scheduleReinject();
+            setTimeout(injectPostAuthors, 0);
             log('feed swapped in place');
         } catch(err) {
             logErr('feed swap failed, falling back to full navigation:', err.message);
@@ -917,11 +964,16 @@
 
     // the script runs at document-start: body may not exist yet, and the dropdown content
     // loads lazily — install the observer as soon as body appears, inject as DOM settles
+    function injectAll() {
+        injectSortSubmenus();
+        injectPostAuthors();
+    }
+
     function startSortSubmenuWatching() {
         ensureStyles();
-        injectSortSubmenus();
+        injectAll();
         scheduleReinject();
-        const subObserver = new MutationObserver(() => injectSortSubmenus());
+        const subObserver = new MutationObserver(() => injectAll());
         subObserver.observe(document.body, { childList: true, subtree: true });
     }
     if(document.body) {
