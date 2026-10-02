@@ -1,6 +1,6 @@
 // E2E: image viewer feature — click interception, zoom, pan, nav, close, built-in lightbox override.
 import { readFileSync } from 'node:fs';
-import { getChromium, launchOptions, forwardPageLogs } from '../tools/lib/browser.mjs';
+import { getChromium, launchOptions, forwardPageLogs, parkOutOfTheWay } from '../tools/lib/browser.mjs';
 import { loadFirefoxRedditCookies } from '../tools/lib/cookies.mjs';
 
 const SCRIPT = readFileSync(new URL('../Reddit-QoL.user.js', import.meta.url), 'utf8');
@@ -14,6 +14,7 @@ const ok = (cond, name) => {
 
 const chromium = await getChromium();
 const browser = await chromium.launch(launchOptions());
+await parkOutOfTheWay();
 const ctx = await browser.newContext({ viewport: { width: 1280, height: 1000 } });
 await ctx.addCookies(await loadFirefoxRedditCookies());
 await ctx.addInitScript(SCRIPT);
@@ -57,15 +58,36 @@ await page.waitForTimeout(200);
 transform = await page.$eval('#rl-viewer img', img => img.style.transform);
 ok(transform.includes('scale(1.5625)'), `zoom compounds (%24x total) (${ transform })`);
 
-// ---------- pan while zoomed ----------
+// ---------- native HTML5 image drag must not hijack the pointer ----------
+await page.evaluate(() => {
+    window.__dnd = 0;
+    document.addEventListener('dragstart', () => window.__dnd++, true);
+});
 await page.mouse.move(center.x, center.y);
+await page.mouse.down();
+await page.mouse.move(center.x - 40, center.y, { steps: 3 });
+await page.mouse.up();
+const dnd = await page.evaluate(() => window.__dnd);
+ok(dnd === 0, `no native browser dragstart while panning (count = ${ dnd | 0 })`);
+
+// reset zoom/pan (pan persists between gestures by design, so start this check clean)
+for(let i = 0; i < 12; i++) {
+    await page.mouse.wheel(0, 300);
+    await page.waitForTimeout(50);
+}
+
+// ---------- pan while zoomed (needs a zoom first — pan is disabled at scale 1) ----------
+await page.mouse.move(center.x, center.y);
+await page.mouse.wheel(0, -300);
+await page.waitForTimeout(150);
+await page.mouse.wheel(0, -300);
+await page.waitForTimeout(150);
 await page.mouse.down();
 await page.mouse.move(center.x - 120, center.y - 60, { steps: 5 });
 await page.mouse.up();
 await page.waitForTimeout(200);
 const panned = await page.$eval('#rl-viewer img', img => img.style.transform);
-ok(/translate\(-1[12]\dpx/.test(panned) || /translate(-120px)/.test(panned), `drag panned the image (${ panned }) `);
-// |-120px translation expected; regex above is loose on purpose — prints the real value
+ok(/translate\(-1[12]\dpx/.test(panned) && !/scale\(1\)/.test(panned), `drag panned the zoomed image (${ panned })`);
 
 // ---------- wheel out resets ----------
 for(let i = 0; i < 12; i++) {

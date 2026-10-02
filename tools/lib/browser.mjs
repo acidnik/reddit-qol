@@ -7,6 +7,7 @@
 import { existsSync, readdirSync } from 'node:fs';
 import { homedir } from 'node:os';
 import path from 'node:path';
+import { execFileSync, spawn } from 'node:child_process';
 
 const PLAYWRIGHT_CANDIDATES = [
     process.env.PLAYWRIGHT_PATH,
@@ -84,4 +85,36 @@ export function forwardPageLogs(page, prefix = 'page') {
         }
     });
     page.on('pageerror', err => console.error(`[${ prefix}:pageerror] ${ err.message }`));
+}
+
+// Reddit hard-blocks headless sessions (humanity wall), so tests run headed - but a test window
+// popping over the user's desktop is hostile: park it on the last niri workspace without focus.
+export async function parkOutOfTheWay() {
+    if(!(process.env.WAYLAND_DISPLAY || process.env.NIRI_SOCKET)) {
+        return;
+    }
+    // the window maps only after the first page paint, so park it from a detached process
+    // that keeps polling niri for up to 30s instead of blocking the test
+    const child = spawn(process.execPath, ['-e', `
+        const { execFileSync } = require('node:child_process');
+        const niriJson = args => JSON.parse(execFileSync('niri', ['msg', '--json', ...args], {encoding:'utf8'}));
+        // park every chromium window except this guardian script's own (there is none)
+        async function main() {
+            const wsCount = Math.max(...niriJson(['workspaces']).map(w => w.idx));
+            for(let i = 0; i < 60; i++) {
+                const wins = niriJson(['windows']).filter(w => /chrom/i.test(w.app_id || ''));
+                for(const win of wins) {
+                    execFileSync('niri', ['msg', 'action', 'move-window-to-workspace',
+                        '--window-id', String(win.id), '--focus', 'false', String(wsCount)]);
+                    console.log('parked browser window #' + win.id + ' on workspace ' + wsCount);
+                }
+                if(wins.length) {
+                    return;
+                }
+                await new Promise(r => setTimeout(r, 500));
+            }
+        }
+        main();
+    `], { detached: true, stdio: 'ignore' });
+    child.unref();
 }

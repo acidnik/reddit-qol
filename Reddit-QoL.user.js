@@ -242,6 +242,13 @@
                 <a class="rl-viewer-btn rl-viewer-close" title="Close (Esc)">×</a>
             </div>`;
         imgEl = overlay.querySelector('.rl-viewer-img');
+        // нативный браузерный HTML5 drag выключаем на <img> атрибутом (Firefox игнорирует
+        // -webkit-user-drag из css) и ещё одним dragstart preventDefault под страховку
+        imgEl.draggable = false;
+        overlay.addEventListener('dragstart', e => {
+            e.preventDefault();
+            log('native image drag suppressed');
+        });
         counterEl = overlay.querySelector('.rl-viewer-counter');
         prevBtn = overlay.querySelector('.rl-viewer-prev');
         nextBtn = overlay.querySelector('.rl-viewer-next');
@@ -258,6 +265,10 @@
         // pan by dragging while zoomed: pointer events cover mouse + touch
         overlay.addEventListener('pointerdown', e => {
             if(e.target !== imgEl && !imgEl.contains(e.target)) {
+                return;
+            }
+            if(scale === 1) {
+                log('pointerdown at scale 1 — no pan, wheel to zoom first');
                 return;
             }
             dragging = true;
