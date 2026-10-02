@@ -89,6 +89,16 @@ await page.waitForTimeout(200);
 const panned = await page.$eval('#rl-viewer img', img => img.style.transform);
 ok(/translate\(-1[12]\dpx/.test(panned) && !/scale\(1\)/.test(panned), `drag panned the zoomed image (${ panned })`);
 
+// cursor protocol: default at rest -> grabbing mid-drag -> default after drag
+const cursorAtRest = await page.$eval('#rl-viewer img', img => getComputedStyle(img).cursor);
+await page.mouse.down();
+const cursorDuring = await page.$eval('#rl-viewer img', img => getComputedStyle(img).cursor);
+await page.mouse.up();
+const cursorAfter = await page.$eval('#rl-viewer img', img => getComputedStyle(img).cursor);
+ok(cursorAtRest === 'default', `default cursor at rest (${ cursorAtRest })`);
+ok(cursorDuring === 'grabbing', `grabbing cursor mid-drag (${ cursorDuring })`);
+ok(cursorAfter === 'default', `default cursor after drag (${ cursorAfter })`);
+
 // ---------- wheel out resets ----------
 for(let i = 0; i < 12; i++) {
     await page.mouse.wheel(0, 300);

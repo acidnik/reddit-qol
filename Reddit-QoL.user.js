@@ -96,6 +96,11 @@
             if(!container) {
                 return;
             }
+            // video posts own the click (native player); their poster img is not a viewer image
+            if(container.querySelector('shreddit-player, shreddit-player-2, shreddit-video, video')) {
+                log('video post — not a viewer image:', (post.getAttribute('post-title') || '').slice(0, 40));
+                return;
+            }
             const previews = container.querySelectorAll('img.non-lightboxed-content');
             if(previews.length) {
                 previews.forEach(preview => {
@@ -168,10 +173,16 @@
             height: auto;
             user-select: none;
             -webkit-user-drag: none;
-            cursor: zoom-in;
+            cursor: default;
         }
-        #rl-viewer .rl-viewer-img.rl-draggable {
-            cursor: grab;
+        #rl-viewer .rl-viewer-canvas {
+            cursor: default;
+        }
+        #rl-viewer.rl-panning {
+            cursor: grabbing;
+        }
+        #rl-viewer.rl-panning * {
+            cursor: grabbing !important;
         }
         #rl-viewer .rl-viewer-toolbar {
             position: fixed;
@@ -274,7 +285,7 @@
             dragging = true;
             dragStartX = e.clientX - panX;
             dragStartY = e.clientY - panY;
-            imgEl.classList.toggle('rl-draggable', scale > 1);
+            overlay.classList.add('rl-panning');
             imgEl.setPointerCapture(e.pointerId);
             log('drag start', 'scale =', scale);
         });
@@ -290,8 +301,15 @@
         overlay.addEventListener('pointerup', e => {
             if(dragging) {
                 dragging = false;
+                overlay.classList.remove('rl-panning');
                 log('drag end');
             }
+        });
+        // the class must not stay if the gesture is cancelled mid-drag (e.g. browser takes over)
+        overlay.addEventListener('pointercancel', () => {
+            dragging = false;
+            overlay.classList.remove('rl-panning');
+            log('drag cancelled');
         });
         // click anywhere outside the image closes; the toolbar buttons run their own handlers first
         overlay.addEventListener('click', e => {
@@ -459,6 +477,11 @@
         if(!hit) {
             return null;
         }
+        // video posts own the click: native player must keep its standard behavior
+        if(target.closest && target.closest('shreddit-player, shreddit-player-2, shreddit-video, video')) {
+            log('click on video markup — passed through to reddit');
+            return null;
+        }
         // gallery carousels embed full-res preloads we must not intercept on their own elements
         if(hit.closest('.rl-viewer') || hit.closest('shreddit-lightbox')) {
             return null;
@@ -475,9 +498,10 @@
         if(!hit) {
             return;
         }
+        // second video line of defense: the container itself holds a player
         const el = hit.tagName === 'IMG' ? hit : hit.querySelector('img');
-        if(!el) {
-            log('clicked container has no img, skipping', hit.tagName);
+        if(!el || hit.querySelector('shreddit-player, shreddit-player-2, shreddit-video, video')) {
+            log('video/empty container — passed through', hit.tagName);
             return;
         }
         e.preventDefault();
