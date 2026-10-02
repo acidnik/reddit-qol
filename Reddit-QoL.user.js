@@ -435,7 +435,20 @@
     function applyWheelZoom(e) {
         const oldScale = scale;
         const factor = e.deltaY < 0 ? 1.25 : 0.8;
-        const newScale = Math.min(16, Math.max(1, scale * factor));
+        let newScale = Math.min(16, Math.max(1, scale * factor));
+        // don't wheel past the 1:1 pixel view: land exactly on 100% when a step crosses it.
+        // eps keeps float noise (scale*fit = 0.9999999) from re-triggering the snap forever.
+        // standing exactly at 100% and wheeling out must go DOWN freely — snap only on crossing
+        const fit = fitScaleFactor();
+        if(fit && fit < 1) {
+            const eps = 1e-4;
+            const rOld = scale * fit;
+            const rNew = newScale * fit;
+            if((rOld < 1 - eps && rNew >= 1) || (rOld > 1 + eps && rNew <= 1)) {
+                newScale = 1 / fit;
+                log('wheel zoom snapped to 100% (1:1)');
+            }
+        }
         if(newScale === oldScale) {
             log('wheel zoom clamped at', oldScale);
             return;
@@ -459,14 +472,18 @@
 
     // zoom % semantics: 100% = one image pixel per screen pixel; the fitted view reports its
     // actual downscale (e.g. a 4k image on a 2k screen opens as 47%)
-    function currentZoomPercent() {
+    function fitScaleFactor() {
         const nw = imgEl.naturalWidth;
         const nh = imgEl.naturalHeight;
         if(!nw || !nh || !canvasEl || !canvasEl.clientWidth) {
             return null;
         }
-        const fit = Math.min(canvasEl.clientWidth / nw, canvasEl.clientHeight / nh, 1);
-        return Math.round(scale * fit * 100);
+        return Math.min(canvasEl.clientWidth / nw, canvasEl.clientHeight / nh, 1);
+    }
+
+    function currentZoomPercent() {
+        const fit = fitScaleFactor();
+        return fit === null ? null : Math.round(scale * fit * 100);
     }
 
     function applyTransform() {

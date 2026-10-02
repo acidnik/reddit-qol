@@ -190,6 +190,32 @@ const dims2 = await page.$eval('#rl-viewer .rl-viewer-dims', el => el.textConten
 ok(/^\d+×\d+$/.test(dims2), `dims refresh after nav (${ dims2 })`);
 await page.keyboard.press('ArrowLeft');
 await page.mouse.wheel(0, 300);
+
+// wheeling through 100% must land exactly on it, not jump over (88 -> 110 is wrong, 88 -> 100 right)
+const p0 = parseInt(await page.$eval('#rl-viewer .rl-viewer-zoom', el => el.textContent), 10);
+let p = p0;
+let guard = 0;
+while(p < 100 && guard++ < 12) {
+    await page.mouse.move(center.x, center.y);
+    await page.mouse.wheel(0, -300);
+    await page.waitForTimeout(120);
+    p = parseInt(await page.$eval('#rl-viewer .rl-viewer-zoom', el => el.textContent), 10);
+}
+ok(p === 100, `wheel-in snaps exactly to 100% (from ${ p0 }%, got ${ p }%)`);
+// zooming out from just above 100% also snaps back onto it
+await page.mouse.wheel(0, -300); // one more step past 100%
+await page.waitForTimeout(120);
+const above = parseInt(await page.$eval('#rl-viewer .rl-viewer-zoom', el => el.textContent), 10);
+ok(above > 100, `can go past 100% with the next step (${ above }%)`);
+await page.mouse.wheel(0, 300);
+await page.waitForTimeout(120);
+const backTo = parseInt(await page.$eval('#rl-viewer .rl-viewer-zoom', el => el.textContent), 10);
+ok(backTo === 100, `wheel-out snaps back to exactly 100% (${ above }% -> ${ backTo }%)`);
+// and from exactly 100% wheel-out must keep going DOWN (not park at 100)
+await page.mouse.wheel(0, 300);
+await page.waitForTimeout(120);
+const below = parseInt(await page.$eval('#rl-viewer .rl-viewer-zoom', el => el.textContent), 10);
+ok(below < 100, `wheel-out from 100% continues down (${ backTo }% -> ${ below }%)`);
 // titlebar styling matches the toolbar row
 const titleFont = await page.$eval('#rl-viewer .rl-viewer-titlebar', el => getComputedStyle(el).fontSize);
 const toolbarFont = await page.$eval('#rl-viewer .rl-viewer-toolbar', el => getComputedStyle(el).fontSize);
