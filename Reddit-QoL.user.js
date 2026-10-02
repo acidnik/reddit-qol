@@ -250,6 +250,43 @@
             opacity: 0.35;
             pointer-events: none;
         }
+        .rl-sort-sub {
+            position: fixed;
+            z-index: 2147483646;
+            display: none;
+            margin: 0;
+            padding: 4px 0;
+            list-style: none;
+            min-width: 140px;
+            overflow: hidden;
+        }
+        .rl-sort-sub li {
+            list-style: none;
+            margin: 0;
+        }
+        .rl-sort-sub a {
+            display: block;
+            text-decoration: none;
+            white-space: nowrap;
+            cursor: pointer;
+        }
+        .rl-sort-sub a:hover {
+            background: var(--color-neutral-background-hover, rgba(0, 0, 0, 0.08));
+        }
+        .rl-sub-arrow {
+            /* absolutely positioned inside the (relative) Top link: dead-center vertically,
+               no layout impact from the 3em glyph */
+            position: absolute;
+            right: 12px;
+            top: 50%;
+            transform: translateY(-50%);
+            font-size: 3em;
+            line-height: 1;
+            opacity: 0.65;
+        }
+        html.rl-swapping main {
+            opacity: 0.5;
+        }
         #rl-viewer .rl-viewer-counter,
         #rl-viewer .rl-viewer-info {
             font-variant-numeric: tabular-nums;
@@ -292,7 +329,8 @@
         }
     `;
 
-    function ensureViewer() {
+    // style sheet is needed on page load already (sort submenu), not only when the viewer opens
+    function ensureStyles() {
         if(!document.getElementById('rl-viewer-style')) {
             const style = document.createElement('style');
             style.id = 'rl-viewer-style';
@@ -300,6 +338,10 @@
             document.documentElement.appendChild(style);
             log('styles injected');
         }
+    }
+
+    function ensureViewer() {
+        ensureStyles();
         if(overlay) {
             return overlay;
         }
@@ -441,7 +483,8 @@
         // standing exactly at 100% and wheeling out must go DOWN freely — snap only on crossing
         const fit = fitScaleFactor();
         if(fit && fit < 1) {
-            const eps = 1e-4;
+            // the displayed percent is rounded, so "100%" on screen covers r in [0.995, 1.005]
+            const eps = 5e-3;
             const rOld = scale * fit;
             const rNew = newScale * fit;
             if((rOld < 1 - eps && rNew >= 1) || (rOld > 1 + eps && rNew <= 1)) {
@@ -665,4 +708,225 @@
         entries = collected;
         openViewer(idx, collected);
     }, true);
+
+    // ==================== sort submenu: Top -> time range, SPA feed swap ====================
+
+    // Reddit offers no time-range choice on default feeds: you must click Top (a page load),
+    // then open another dropdown and pick the range (another page load). We add a nested
+    // hover submenu on the Top item and swap the feed in place instead of reloading.
+    const RANGE_ITEMS = [
+        ['Now', 'hour'],
+        ['Today', 'day'],
+        ['This Week', 'week'],
+        ['This Month', 'month'],
+        ['This Year', 'year'],
+        ['All Time', 'all']
+    ];
+
+    // the parent panel paints its background outside the li ancestor chain (portal/slot),
+    // so sample the rendered panel by point while the menu is open
+    // item look is copied from the Top link each time it becomes visible: after an spa swap
+    // the header can be injected while still unstyled (default link blue, zero padding)
+    function applyItemStyles(sub, topLink) {
+        if(sub.dataset.itemStylesApplied) {
+            return;
+        }
+        const s = getComputedStyle(topLink);
+        if(!s.paddingTop || s.paddingTop === '0px') {
+            return;
+        }
+        sub.querySelectorAll('a').forEach(a => {
+            a.style.padding = `${ s.paddingTop } ${ s.paddingRight } ${ s.paddingBottom } ${ s.paddingLeft }`;
+            a.style.color = s.color;
+            a.style.font = s.font;
+        });
+        sub.dataset.itemStylesApplied = '1';
+        log('submenu item styles applied');
+    }
+
+    function applyMenuChrome(sub, li) {
+        if(sub.dataset.chromeApplied) {
+            return;
+        }
+        // the rendered panel is a faceplate-menu inside the (open) shadow root of the dropdown;
+        // light-dom ancestors are all transparent, so query the shadow menu directly
+        const dd = li.closest('shreddit-sort-dropdown');
+        const menu = dd && dd.shadowRoot && dd.shadowRoot.querySelector('faceplate-menu');
+        if(!menu) {
+            return;
+        }
+        const s = getComputedStyle(menu);
+        sub.style.background = s.backgroundColor;
+        sub.style.borderRadius = s.borderRadius === '0px' ? '8px' : s.borderRadius;
+        sub.style.boxShadow = s.boxShadow === 'none' ? '0 4px 16px rgba(0, 0, 0, 0.25)' : s.boxShadow;
+        sub.style.color = s.color;
+        sub.dataset.chromeApplied = '1';
+        log('submenu chrome copied from faceplate-menu');
+    }
+
+    function positionSubmenu(sub, li) {
+        const r = li.getBoundingClientRect();
+        sub.style.top = `${ Math.max(4, Math.min(r.top, innerHeight - 220)) }px`;
+        // prefer the right side; flip left near the viewport edge
+        if(r.right + 160 < innerWidth) {
+            sub.style.left = `${ r.right }px`;
+        } else {
+            sub.style.left = `${ Math.max(4, r.left - 150) }px`;
+        }
+    }
+
+    function injectSortSubmenus() {
+        // on a top/?t=month page reddit renders the menu link as /top/?t=month — match the
+        // path, not the raw href
+        document.querySelectorAll('a[href*="/top/"]').forEach(topLink => {
+            if(!/\/top\/?$/.test(new URL(topLink.href, location.origin).pathname)) {
+                return;
+            }
+            const li = topLink.closest('li');
+            if(!li || li.classList.contains('rl-has-sub') ||
+                !li.closest('shreddit-sort-dropdown, shreddit-async-loader')) {
+                return;
+            }
+            // NOTE: reddit renders several instances (mobile + desktop), some hidden or far
+            // off-screen; each li gets its own submenu and only shows it from its own hover,
+            // so no global "visible instance" filtering is needed here
+            li.classList.add('rl-has-sub');
+            // arrow on the Top item: there is a nested menu now
+            if(!topLink.querySelector('.rl-sub-arrow')) {
+                const arrow = document.createElement('span');
+                arrow.className = 'rl-sub-arrow';
+                arrow.textContent = '▸';
+                topLink.appendChild(arrow);
+            }
+            const sub = document.createElement('ul');
+            sub.className = 'rl-sort-sub';
+            RANGE_ITEMS.forEach(([label, t]) => {
+                const item = document.createElement('li');
+                const a = document.createElement('a');
+                a.href = `${ topLink.href.split('?')[0] }?t=${ t }`;
+                a.textContent = label;
+                a.addEventListener('click', e => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    sub.style.display = 'none';
+                    swapFeed(a.href);
+                });
+                item.appendChild(a);
+                sub.appendChild(item);
+            });
+            // body-level panel: reddit's dropdown containers clip absolutely-positioned children
+            document.body.appendChild(sub);
+            let hideTimer = null;
+            const show = () => {
+                clearTimeout(hideTimer);
+                positionSubmenu(sub, li);
+                applyMenuChrome(sub, li);
+                applyItemStyles(sub, topLink);
+                sub.style.display = 'block';
+            };
+            const hideSoon = () => {
+                clearTimeout(hideTimer);
+                hideTimer = setTimeout(() => { sub.style.display = 'none'; }, 150);
+            };
+            li.addEventListener('mouseenter', show);
+            li.addEventListener('mouseleave', hideSoon);
+            sub.addEventListener('mouseenter', () => clearTimeout(hideTimer));
+            sub.addEventListener('mouseleave', hideSoon);
+            log('sort submenu injected:', topLink.href);
+        });
+    }
+
+    function stripRangeParams(u) {
+        ['t', 'screen_view_count', 'ext-referrer'].forEach(p => u.searchParams.delete(p));
+        return u;
+    }
+
+    // leaving Top for another sort must not drag the time range (and tracking junk) along
+    document.addEventListener('click', e => {
+        if(e.ctrlKey || e.defaultPrevented) {
+            return;
+        }
+        const a = e.target.closest && e.target.closest('a[href*="/best/"], a[href*="/hot/"], a[href*="/new/"], a[href*="/rising/"]');
+        if(!a || !document.querySelector('shreddit-feed')) {
+            return;
+        }
+        const url = new URL(a.href, location.origin);
+        const isSortListing = /\/(best|hot|new|rising)\/?$/.test(url.pathname);
+        if(!isSortListing || (!url.searchParams.has('t') && !url.searchParams.has('screen_view_count'))) {
+            return;
+        }
+        e.preventDefault();
+        e.stopPropagation();
+        swapFeed(stripRangeParams(url).href);
+    }, true);
+
+    // hide stray submenus on any outside click (the host menu may close without a mouseleave)
+    document.addEventListener('click', () => {
+        document.querySelectorAll('.rl-sort-sub').forEach(s => { s.style.display = 'none'; });
+    }, true);
+
+    let lastSwapUrl = null;
+    async function swapFeed(url) {
+        try {
+            log('spa feed swap ->', url);
+            const main = document.querySelector('main');
+            if(!main) {
+                throw new Error('no main element');
+            }
+            document.documentElement.classList.add('rl-swapping');
+            const res = await fetch(url, { credentials: 'same-origin' });
+            if(!res.ok) {
+                throw new Error(`http ${ res.status }`);
+            }
+            const doc = new DOMParser().parseFromString(await res.text(), 'text/html');
+            const newMain = doc.querySelector('main');
+            if(!newMain) {
+                throw new Error('no main in fetched document');
+            }
+            main.replaceWith(newMain);
+            history.pushState({}, '', url);
+            lastSwapUrl = url;
+            // the header can re-render lazily after the swap — re-inject on a short schedule
+            scheduleReinject();
+            log('feed swapped in place');
+        } catch(err) {
+            logErr('feed swap failed, falling back to full navigation:', err.message);
+            location.href = url;
+        } finally {
+            document.documentElement.classList.remove('rl-swapping');
+        }
+    }
+
+    window.addEventListener('popstate', () => {
+        if(document.querySelector('shreddit-feed') && location.href !== lastSwapUrl) {
+            swapFeed(location.href);
+        }
+    });
+
+    // the dropdown content loads lazily (and re-renders after swaps) — poll briefly in
+    // addition to the MutationObserver, since the loader activates on its own schedule
+    function scheduleReinject() {
+        let n = 0;
+        const iv = setInterval(() => {
+            injectSortSubmenus();
+            if(++n >= 16) {
+                clearInterval(iv);
+            }
+        }, 750);
+    }
+
+    // the script runs at document-start: body may not exist yet, and the dropdown content
+    // loads lazily — install the observer as soon as body appears, inject as DOM settles
+    function startSortSubmenuWatching() {
+        ensureStyles();
+        injectSortSubmenus();
+        scheduleReinject();
+        const subObserver = new MutationObserver(() => injectSortSubmenus());
+        subObserver.observe(document.body, { childList: true, subtree: true });
+    }
+    if(document.body) {
+        startSortSubmenuWatching();
+    } else {
+        document.addEventListener('DOMContentLoaded', startSortSubmenuWatching, { once: true });
+    }
 })();
