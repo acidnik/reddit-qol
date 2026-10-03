@@ -125,6 +125,55 @@ const measure = () => page.evaluate(() => {
     };
 });
 
+// The widened block slides over the ancestor comments' threadline strips (absolute, z-index 1,
+// cursor: pointer, spanning the whole thread): they must not paint over the shifted comments and
+// must not steal their clicks any more.
+const measureStrips = () => page.evaluate(async () => {
+    const out = [];
+    for(const block of document.querySelectorAll('.rl-unindent')) {
+        // the probe needs the block on screen: elementFromPoint has nothing to return otherwise
+        block.scrollIntoView({ block: 'center' });
+        await new Promise(r => setTimeout(r, 200));
+        const br = block.getBoundingClientRect();
+        const cs = getComputedStyle(block);
+        const deep = block.querySelector('shreddit-comment');
+        const dr = deep ? deep.getBoundingClientRect() : null;
+        const probes = [];
+        if(dr) {
+            for(const x of [Math.round(br.left + 4), Math.round(dr.left + 4)]) {
+                const y = Math.round(dr.top + 20);
+                const top = document.elementFromPoint(x, y);
+                probes.push({
+                    at   : [x, y],
+                    top  : top ? top.tagName.toLowerCase() + (top.classList.contains('threadline-strip') ? '.threadline-strip' : '') : null,
+                    inBlock : !!(top && block.contains(top)),
+                    isStrip: !!(top && top.classList.contains('threadline-strip'))
+                });
+            }
+        }
+        const covered = [...document.querySelectorAll('.threadline-strip')].filter(s => {
+            const sr = s.getBoundingClientRect();
+            return sr.left < br.right && sr.right > br.left && sr.top < br.bottom && sr.bottom > br.top;
+        }).length;
+        out.push({ z: cs.zIndex, bg: cs.backgroundColor, covered, probes });
+    }
+    return out;
+});
+
+const checkStrips = (tag, strips) => {
+    if(!strips.length) {
+        return;
+    }
+    console.log(`--- ${ tag }: strips vs ${ strips.length } reset block(s)`);
+    strips.forEach(s => console.log(`   z=${ s.z } bg=${ s.bg } coveredStrips=${ s.covered } probes=${ JSON.stringify(s.probes) }`));
+    const hits = strips.flatMap(s => s.probes);
+    ok(hits.length > 0 && hits.every(p => p.inBlock),
+        `${ tag }: clicks at the left edge of a widened comment land inside it (${ JSON.stringify(hits.map(p => p.top)) })`);
+    ok(hits.every(p => !p.isStrip), `${ tag }: no threadline strip takes those clicks`);
+    ok(strips.every(s => s.covered === 0 || (parseInt(s.z, 10) >= 2 && s.bg !== 'rgba(0, 0, 0, 0)')),
+        `${ tag }: every block covering a strip is lifted above it and filled with the page background`);
+};
+
 const check = (tag, report, expectResets) => {
     console.log(`\n--- ${ tag }: viewport ${ report.viewport } | scrollWidth ${ report.scrollW } | level-0 box ${ JSON.stringify(report.base) }`);
     console.log('BY DEPTH:' + report.byDepth.map(([d, v]) => ` d${ d }=${ v.n } w${ v.min } l${ v.leftMin }`).join(''));
@@ -142,6 +191,7 @@ const check = (tag, report, expectResets) => {
 };
 
 check('load', await measure(), true);
+checkStrips('load', await measureStrips());
 
 // the pull is measured in px, so a narrower window has to be re-measured from scratch
 await page.setViewportSize({ width: 1000, height: 1000 });

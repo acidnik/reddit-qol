@@ -288,6 +288,14 @@
         .rl-unindent {
             margin-left: calc(-1 * var(--rl-pull-left, 0px));
             width: calc(100% + var(--rl-pull-left, 0px) - var(--rl-pull-right, 0px));
+            /* Sliding left puts the block over the ancestor comments' threadline strips: absolute,
+               z-index 1, cursor-pointer, spanning the whole thread — they painted over the shifted
+               comments and swallowed their clicks (and lighting up their hover highlight made the
+               thread line show through the text). Lift the block above them and fill it with the
+               page background, so the strips it covers are neither visible nor clickable there. */
+            position: relative;
+            z-index: 2;
+            background: var(--color-neutral-background, #fff);
         }
         /* "N more replies" folds we expand ourselves: the legacy page needs seconds to render,
            so the link is swapped for a spinner instead of leaving the click without feedback */
