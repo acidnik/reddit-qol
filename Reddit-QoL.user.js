@@ -282,6 +282,13 @@
         .rl-sort-sub a:hover {
             background: var(--color-neutral-background-hover, rgba(0, 0, 0, 0.08));
         }
+        /* Deep nesting: the reply container of a too-narrow comment is pulled back onto the level-0
+           box — --rl-pull-left slides it left, and the width makes its right edge land on the box's
+           right edge (percentages here resolve against the grid area the block lives in) */
+        .rl-unindent {
+            margin-left: calc(-1 * var(--rl-pull-left, 0px));
+            width: calc(100% + var(--rl-pull-left, 0px) - var(--rl-pull-right, 0px));
+        }
         /* "N more replies" folds we expand ourselves: the legacy page needs seconds to render,
            so the link is swapped for a spinner instead of leaving the click without feedback */
         .rl-fold-loading a,
@@ -1399,5 +1406,127 @@
         startGifPriming();
     } else {
         document.addEventListener('DOMContentLoaded', startGifPriming, { once: true });
+    }
+
+    // ==================== deep nesting: keep comments readable ====================
+
+    // Every nesting level costs one indent gutter (32px at xs and up, 24px below): a reply is
+    // `col-start-2` inside its parent's children grid, whose first column IS that gutter. So every
+    // level walks the left edge 32px right and shrinks the text column by 32px — around depth 12 a
+    // comment is narrower than MIN_COMMENT_WIDTH and a deep thread becomes a sliver of text.
+    //
+    // The fix: when a comment gets that narrow, pull the block that holds it (its parent, the
+    // children grid) back to the level-0 box — same left edge, same right edge, same width as a
+    // top-level comment. The subtree below it then has a fresh full-width budget, and the next
+    // reset only happens ~11 levels further down.
+    const MIN_COMMENT_WIDTH = 250;
+    const INDENT_RESET_DEBOUNCE_MS = 200;
+
+    let lastIndentSignature = null;
+    let lastIndentLog = null;
+
+    function resetDeepIndents(forced) {
+        const comments = [...document.querySelectorAll('shreddit-comment')];
+        if(!comments.length) {
+            return;
+        }
+        // reddit mutates the tree constantly (timestamps, view counts) while the nesting itself
+        // only moves when comments come or go, the marks are dropped by a re-render, or the
+        // viewport changes. Skipping the sweep on an unchanged shape keeps this off the hot path —
+        // the sweep costs a reflow per reset it applies.
+        const signature = `${ comments.length }:${ innerWidth }:${ document.querySelectorAll('.rl-unindent').length }`;
+        if(!forced && signature === lastIndentSignature) {
+            return;
+        }
+        lastIndentSignature = signature;
+        // our own pull must not feed back into the measurement — always start from the plain layout
+        document.querySelectorAll('.rl-unindent').forEach(block => {
+            block.classList.remove('rl-unindent');
+            block.style.removeProperty('--rl-pull-left');
+            block.style.removeProperty('--rl-pull-right');
+        });
+        // the box of a level-0 comment is the reference every reset aligns to
+        const topLevel = comments.filter(c => c.parentElement && !c.parentElement.closest('shreddit-comment'));
+        if(!topLevel.length) {
+            lastIndentSignature = null;
+            return;
+        }
+        const base = topLevel[0].getBoundingClientRect();
+        if(!base.width) {
+            // not laid out yet (hidden post, preview pane, ...): undo the signature so the next
+            // mutation retries instead of skipping on an unchanged tree
+            lastIndentSignature = null;
+            return;
+        }
+        let resets = 0;
+        // Document order matters: a shallower reset widens everything below it, so deeper comments
+        // must be measured AFTER it was applied — that is what lands nested resets on the level-0
+        // box instead of stacking their pulls and running off to the left.
+        for(const comment of comments) {
+            if(comment.parentElement && !comment.parentElement.closest('shreddit-comment')) {
+                continue;   // top level: already full width
+            }
+            const rect = comment.getBoundingClientRect();
+            if(rect.width <= 0 || rect.width >= MIN_COMMENT_WIDTH) {
+                continue;   // wide enough, or not rendered (collapsed thread)
+            }
+            const block = comment.parentElement;
+            if(!block || block === document.body || block.tagName === 'SHREDDIT-COMMENT' ||
+                block.classList.contains('rl-unindent')) {
+                continue;
+            }
+            const box = block.getBoundingClientRect();
+            // how far the block has walked right, and how far it already sticks out on the right
+            const pullLeft = Math.round(box.left - base.left);
+            const pullRight = Math.round(box.right - base.right);
+            if(pullLeft <= 0) {
+                continue;   // already starts at the level-0 left edge
+            }
+            block.style.setProperty('--rl-pull-left', `${ pullLeft }px`);
+            block.style.setProperty('--rl-pull-right', `${ Math.max(0, pullRight) }px`);
+            block.classList.add('rl-unindent');
+            resets++;
+        }
+        // the tree churns constantly, so only a changed set of resets is worth a log line
+        const key = [...document.querySelectorAll('.rl-unindent')]
+            .map(b => b.style.getPropertyValue('--rl-pull-left')).join(',');
+        if(resets && key !== lastIndentLog) {
+            lastIndentLog = key;
+            log('deep nesting: pulled', resets, 'container(s) back to the level-0 width for comments under',
+                MIN_COMMENT_WIDTH, 'px');
+        }
+    }
+
+    // Comments arrive lazily and through our own grafts, SPA swaps rebuild the tree, and expanding
+    // a collapsed thread only flips `open` — all of those can expose new deep comments. Only `open`
+    // is watched as an attribute: our own class/style writes must not re-trigger the scan.
+    function startIndentResets() {
+        let pending = null;
+        let forced = false;
+        const schedule = mustRescan => {
+            forced = forced || !!mustRescan;
+            if(pending) {
+                return;
+            }
+            pending = setTimeout(() => {
+                pending = null;
+                const force = forced;
+                forced = false;
+                resetDeepIndents(force);
+            }, INDENT_RESET_DEBOUNCE_MS);
+        };
+        new MutationObserver(records => {
+            // expanding a collapsed thread only flips `open` — the comment count stays the same
+            schedule(records.some(r => r.type === 'attributes'));
+        }).observe(document.body, {
+            childList: true, subtree: true, attributes: true, attributeFilter: ['open']
+        });
+        window.addEventListener('resize', schedule);
+        schedule();
+    }
+    if(document.body) {
+        startIndentResets();
+    } else {
+        document.addEventListener('DOMContentLoaded', startIndentResets, { once: true });
     }
 })();
