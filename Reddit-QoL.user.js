@@ -1148,4 +1148,113 @@
     } else {
         document.addEventListener('DOMContentLoaded', startSortSubmenuWatching, { once: true });
     }
+
+    // ==================== comment gif priming ====================
+
+    // A gif posted in a comment renders as shreddit-player with the <video> inside its shadow
+    // root parked at preload="metadata" and no src until the user presses play, so the comment
+    // shows a black square. Loading the data is enough for the browser to paint frame 0 — and we
+    // must NOT play()/pause() it: shreddit-player hides its own play button once it believes it
+    // is playing, after which clicks land on the bare <video> (no toggle handler) and the gif
+    // can never be started by hand again.
+    const GIF_PRIME_SELECTOR = 'shreddit-comment shreddit-player, shreddit-comment shreddit-player-2';
+    const GIF_PRIME_THRESHOLD = 0.1;
+    const GIF_PRIME_READY_STATE = 2;
+    const GIF_PRIME_TRIES = 20;
+    const GIF_PRIME_RETRY_MS = 300;
+    const GIF_PRIME_SCAN_DEBOUNCE_MS = 200;
+
+    // true once the player was handled (primed or nothing left to do), false to retry later
+    function primeCommentGif(player) {
+        const video = player.shadowRoot && player.shadowRoot.querySelector('video');
+        if(!video) {
+            return false;   // the async loader has not built the shadow video yet
+        }
+        if(video.readyState >= GIF_PRIME_READY_STATE && video.videoWidth) {
+            log('comment gif already has a frame, left alone');
+            return true;
+        }
+        const src = video.getAttribute('src') || player.getAttribute('src');
+        if(!src) {
+            logErr('comment gif player has no src:', player.getAttribute('comment-id') || '(no comment-id)');
+            return true;   // nothing to load — retrying will not help
+        }
+        log('priming comment gif', player.getAttribute('comment-id') || '', src.slice(0, 80));
+        video.preload = 'auto';
+        if(!video.getAttribute('src')) {
+            video.src = src;
+        }
+        video.addEventListener('loadeddata', () => {
+            log('comment gif frame ready', video.videoWidth, 'x', video.videoHeight);
+            // we never started playback, so pin the visible frame to the very beginning
+            if(video.paused && video.currentTime > 0) {
+                video.currentTime = 0;
+            }
+        }, { once: true });
+        video.load();
+        return true;
+    }
+
+    function primeCommentGifWithRetries(player, attempt) {
+        attempt = attempt || 0;
+        if(!player.isConnected) {
+            log('comment gif player left the DOM before priming, dropping it');
+            return;
+        }
+        if(primeCommentGif(player)) {
+            return;
+        }
+        if(attempt >= GIF_PRIME_TRIES) {
+            logErr('comment gif never hydrated, giving up:', player.getAttribute('comment-id') || '(no comment-id)');
+            return;
+        }
+        setTimeout(() => primeCommentGifWithRetries(player, attempt + 1), GIF_PRIME_RETRY_MS);
+    }
+
+    // gifs are primed when they scroll into view, never earlier: a comment page can hold dozens of
+    // comments and priming them all would pull megabytes of video nobody asked to see
+    let gifObserver = null;
+    function observeCommentGifs() {
+        if(!gifObserver) {
+            gifObserver = new IntersectionObserver(visible => {
+                visible.forEach(entry => {
+                    if(!entry.isIntersecting) {
+                        return;
+                    }
+                    // one shot per player: never fight shreddit-player's own state again
+                    gifObserver.unobserve(entry.target);
+                    primeCommentGifWithRetries(entry.target);
+                });
+            }, { threshold: GIF_PRIME_THRESHOLD });
+        }
+        document.querySelectorAll(GIF_PRIME_SELECTOR).forEach(player => {
+            if(player.dataset.rlGifObserved) {
+                return;
+            }
+            player.dataset.rlGifObserved = '1';
+            gifObserver.observe(player);
+        });
+    }
+
+    // comments arrive through SPA feeds and through our own iframe "more replies" grafts, so the
+    // scan has to keep running; it is debounced because reddit mutates the tree constantly
+    function startGifPriming() {
+        observeCommentGifs();
+        let pending = null;
+        const gifDomObserver = new MutationObserver(() => {
+            if(pending) {
+                return;
+            }
+            pending = setTimeout(() => {
+                pending = null;
+                observeCommentGifs();
+            }, GIF_PRIME_SCAN_DEBOUNCE_MS);
+        });
+        gifDomObserver.observe(document.body, { childList: true, subtree: true });
+    }
+    if(document.body) {
+        startGifPriming();
+    } else {
+        document.addEventListener('DOMContentLoaded', startGifPriming, { once: true });
+    }
 })();
