@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Reddit QoL
 // @namespace    http://tampermonkey.net/
-// @version      2026-10-02
+// @version      1.0.0
 // @run-at       document-start
 // @description  try to take over the world!
 // @author       Nikita Bilous <nikita@bilous.me>

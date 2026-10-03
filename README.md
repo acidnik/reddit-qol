@@ -4,7 +4,8 @@ A Tampermonkey userscript that fixes what reddit's own UI still gets wrong: imag
 viewer, comment gifs show a frame instead of a black square, "N more replies" loads where you are,
 deep threads stay readable, and the sort menu gets the time ranges it hides.
 
-Install: add [`Reddit-QoL.user.js`](Reddit-QoL.user.js) to Tampermonkey (or Violentmonkey).
+Install: click [`Reddit-QoL.user.js`](https://github.com/acidnik/reddit-qol/raw/refs/heads/main/Reddit-QoL.user.js) —
+Tampermonkey (or Violentmonkey) opens its install dialog.
 
 # Features
 
@@ -17,7 +18,7 @@ buttons to move through every image of the page. Replaces reddit's built-in ligh
 <details>
 <summary>▶ demo: open, zoom, pan, next/prev (mp4, 9 s)</summary>
 
-<video src="media/image_modal.mp4" controls preload="metadata" width="760"></video>
+<video src="https://github.com/user-attachments/assets/7920ab8c-f8bd-4d2a-abda-1ea29fd9b04b" controls preload="metadata" width="760"></video>
 
 </details>
 
@@ -32,7 +33,7 @@ comment page must not pull megabytes nobody asked to see) and still plays on cli
 
 | before | after |
 | :---: | :---: |
-| <video src="media/gifs_before.mp4" controls preload="metadata" width="380"></video> | <video src="media/gifs_after.mp4" controls preload="metadata" width="380"></video> |
+| <video src="https://github.com/user-attachments/assets/32edc37c-0d24-423d-89a2-368526b4d13b" controls preload="metadata" width="380"></video> | <video src="https://github.com/user-attachments/assets/5a705a11-fe1c-4aa2-a9f6-9ada2c8a1102" controls preload="metadata" width="380"></video> |
 | black square until you press play | first frame is there right away |
 
 </details>
@@ -50,7 +51,7 @@ comment page must not pull megabytes nobody asked to see) and still plays on cli
 <details>
 <summary>▶ demo: folds expanding in place, deep threads (mp4, 87 s)</summary>
 
-<video src="media/comments.mp4" controls preload="metadata" width="420"></video>
+<video src="https://github.com/user-attachments/assets/1d29fa18-e20a-4e7e-95ea-c892d1c3e1f4" controls preload="metadata" width="420"></video>
 
 </details>
 
