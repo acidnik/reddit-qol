@@ -2,6 +2,7 @@
 // @name         Reddit QoL
 // @namespace    http://tampermonkey.net/
 // @version      2026-10-02
+// @run-at       document-start
 // @description  try to take over the world!
 // @author       Nikita Bilous <nikita@bilous.me>
 // @match        https://www.reddit.com/*
@@ -11,6 +12,13 @@
 
 (function() {
     'use strict';
+
+    // tampermonkey may inject the script twice (page + content contexts); one is enough —
+    // double registrations meant double iframes and duplicated grafts
+    if(window.__rlLoaded) {
+        return;
+    }
+    window.__rlLoaded = true;
 
     const LOG_PREFIX = '[RL]';
     let verbose = true;
@@ -904,6 +912,132 @@
         e.preventDefault();
         e.stopPropagation();
         swapFeed(stripRangeParams(url).href);
+    }, true);
+
+    // ==================== dynamic "more replies" (no legacy page reload) ====================
+
+    // ==================== dynamic "more replies": true in-place expansion via hidden iframe ========
+
+    // Deep "N more replies" folds are anchors with force-legacy-sct=1 — a full page load to a
+    // minimal subthread page. That page renders its slice of comments client-side, so: load it
+    // in a hidden same-origin iframe, harvest the rendered reply subtrees (slot names match the
+    // live parent by construction), graft them into the fold position and drop the iframe.
+    // Folds inside the grafted content are intercepted again -> arbitrary depth, all in place.
+    function findCommentHref(fromEl) {
+        // the force-legacy anchor may sit in a fold row, in the data-more-replies-link wrapper,
+        // or anywhere in the surrounding partial
+        let n = fromEl;
+        for(let i = 0; i < 8 && n; i++) {
+            const anchor = n.querySelector && n.querySelector('a[slot=more-comments-permalink], a.more-comments-link, a[href*="/comment/"][href*="force-legacy-sct"]');
+            if(anchor && anchor.href && anchor.href.includes('force-legacy-sct')) {
+                return anchor;
+            }
+            const m = n.getAttribute && n.getAttribute('src');
+            if(m && /comment\//.test(decodeURIComponent(m))) {
+                const id = decodeURIComponent(m).match(/comment\/([^/?]+)/);
+                if(id) {
+                    return { href: new URL(`comment/${ id[1] }/?force-legacy-sct=1`, location.origin).href, virtual: true };
+                }
+            }
+            n = n.parentElement;
+        }
+        return null;
+    }
+
+    function graftParent(anchorEl) {
+        // replies must be inserted at the fold's position: before its row, inside the tree slot
+        const row = anchorEl.closest('div.fold-more, div[data-more-replies-link], faceplate-partial');
+        return (row && row.parentElement) || anchorEl.parentElement;
+    }
+
+    // rowHint may be the real anchor, a nav tracker, or anything close to the fold row
+    async function expandViaIframe(rowHint, href, cid) {
+        const row = rowHint.closest && rowHint.closest('div.fold-more, div[data-more-replies-link], faceplate-partial');
+        const container = (row && row.parentElement) || rowHint.parentElement;
+        if(!container) {
+            logErr('no graft container found — doing nothing (no navigation)');
+            return;
+        }
+        const iframe = document.createElement('iframe');
+        iframe.src = href;
+        iframe.style.cssText = 'position:fixed;left:-9999px;top:0;width:1280px;height:1000px;';
+        document.body.appendChild(iframe);
+        log('more-replies: iframe loading', href.slice(0, 80));
+        const t0 = Date.now();
+        let idoc = null;
+        while(Date.now() - t0 < 20000) {
+            await new Promise(r => setTimeout(r, 400));
+            try {
+                idoc = iframe.contentDocument;
+            } catch(err) {
+                break;
+            }
+            if(idoc && idoc.querySelector(`shreddit-comment[thingid="t1_${ cid }"]`) &&
+                idoc.querySelectorAll('shreddit-comment').length > 0 && Date.now() - t0 > 2500) {
+                break;
+            }
+        }
+        const root = idoc && idoc.querySelector(`shreddit-comment[thingid="t1_${ cid }"]`);
+        const replies = root ? [...root.querySelectorAll('shreddit-comment')].filter(r =>
+            (r.getAttribute('slot') || '').startsWith(`children-t1_${ cid }`)) : [];
+        if(!replies.length) {
+            logErr('iframe harvest empty for', cid, '- doing nothing (no navigation)');
+            iframe.remove();
+            return;
+        }
+        const frag = document.createDocumentFragment();
+        // importNode (clone, NOT adopt): listeners from the iframe context must not come along —
+        // cloned custom elements re-register in this document and faceplate-partial machinery
+        // re-attaches, so "+N more replies" buttons inside transplanted replies stay alive
+        replies.forEach(r => frag.appendChild(document.importNode(r, true)));
+        // adopted folds carry listeners bound in the iframe context; after iframe removal those
+        // are dead (click = silent nothing). Stamp them so the click interceptor owns them.
+        frag.querySelectorAll('div.fold-more').forEach(f => { f.dataset.rlFromIframe = '1'; });
+        container.insertBefore(frag, row);
+        // if the iframe had a residual fold (more batches left), KEEP the original live fold —
+        // it points to the same thread root and our interceptor will load the next batch;
+        // otherwise the thread is complete and the fold goes away
+        const residual = [...root.querySelectorAll('div.fold-more')].find(f =>
+            f.closest('shreddit-comment') === root);
+        if(!residual) {
+            row.remove();
+        }
+        iframe.remove();
+        log('subthread grafted in place:', replies.length, 'replies for', cid);
+    }
+
+    window.addEventListener('click', e => {
+        if(e.button !== 0 || e.ctrlKey || e.metaKey || e.shiftKey || e.altKey) {
+            return;
+        }
+        // the tracked-navigation variant: faceplate-tracker[noun=more_replies] with an action
+        // attribute navigates fully; plain in-place partial buttons (no action) expand natively
+        const tracker = e.target.closest && e.target.closest('faceplate-tracker[noun="more_replies"]');
+        const a = e.target.closest && e.target.closest('a[slot=more-comments-permalink], a.more-comments-link');
+        const navTracker = tracker && tracker.hasAttribute('action');
+        if(!a && !navTracker) {
+            return;
+        }
+        if(tracker && !navTracker && !a) {
+            log('plain tracker button — native in-place loader');
+            return;
+        }
+        const anchorEl = a || findCommentHref(navTracker || e.target.closest('div.fold-more, faceplate-partial, shreddit-async-loader') || tracker);
+        const url = new URL(anchorEl && anchorEl.href, location.origin);
+        if(!anchorEl || !url.searchParams.has('force-legacy-sct')) {
+            if(navTracker) {
+                logErr('nav tracker, no force-legacy anchor found — doing nothing');
+            }
+            return;
+        }
+        // our expansion owns this click — no navigation, no dead iframe listeners
+        e.preventDefault();
+        e.stopImmediatePropagation();
+        const cid = (url.pathname.match(/comment\/([^/?]+)/) || [])[1];
+        const rowHint = (anchorEl && anchorEl.closest) ? anchorEl : (navTracker || e.target);
+        expandViaIframe(rowHint, url.href, cid).catch(err => {
+            logErr('iframe expansion failed:', err.message, '- doing nothing');
+        });
     }, true);
 
     // hide stray submenus on any outside click (the host menu may close without a mouseleave)

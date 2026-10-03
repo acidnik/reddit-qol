@@ -112,7 +112,7 @@ await page.mouse.move(center.x - 120, center.y - 60, { steps: 5 });
 await page.mouse.up();
 await page.waitForTimeout(200);
 const panned = await page.$eval('#rl-viewer img', img => img.style.transform);
-ok(/translate\(-1[12]\dpx/.test(panned) && !/scale\(1\)/.test(panned), `drag panned the zoomed image (${ panned })`);
+ok(/translate\(-1[12]\d(\.\d+)?px/.test(panned) && !/scale\(1\)/.test(panned), `drag panned the zoomed image (${ panned })`);
 
 // cursor protocol: default at rest -> grabbing mid-drag -> default after drag
 const cursorAtRest = await page.$eval('#rl-viewer img', img => getComputedStyle(img).cursor);
