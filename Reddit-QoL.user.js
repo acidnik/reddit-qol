@@ -1025,13 +1025,18 @@
         return !!(src && /\/svc\/shreddit\/more-comments\//.test(src));
     }
 
-    // last resort for a variant we do not know: the nearest ancestor of the clicked node whose own
-    // subtree carries a force-legacy link. Bounded and logged — this path is a guess, not a fact.
-    function guessFoldRow(fromEl) {
-        let n = fromEl;
-        for(let i = 0; i < 5 && n; i++, n = n.parentElement) {
+    // Last resort for a variant we do not know: the nearest ancestor of the clicked CONTROL whose
+    // subtree carries a force-legacy link. Only ever called for a click that already landed on a
+    // more-replies control, and it stops at the comment holding that control: a wider search finds
+    // some unrelated fold's anchor on a comment page and would start a load on any click at all.
+    function guessFoldRow(control) {
+        let n = control;
+        for(let i = 0; i < 5 && n && n !== document.body; i++, n = n.parentElement) {
             if(n.querySelector && n.querySelector('a[href*="force-legacy-sct"]')) {
                 return n;
+            }
+            if(n.tagName === 'SHREDDIT-COMMENT') {
+                break;
             }
         }
         return null;
@@ -1185,18 +1190,26 @@
         if(e.button !== 0 || e.ctrlKey || e.metaKey || e.shiftKey || e.altKey) {
             return;
         }
-        // the row that owns this click, whatever dress reddit ships it in
-        let row = e.target.closest && e.target.closest('div.fold-more, faceplate-partial, div[data-more-replies-link]');
+        // Only a click that lands on a more-replies control or on a fold row may be ours. This gate
+        // is what keeps the rest of the page clickable: anything else returns before any lookup, so
+        // an ordinary click can never be swallowed by a fold search.
+        const target = e.target;
+        const control = target.closest && target.closest(
+            'a[slot=more-comments-permalink], a.more-comments-link, faceplate-tracker[noun="more_replies"], div[data-more-replies-link]');
+        let row = target.closest && target.closest('div.fold-more, faceplate-partial, div[data-more-replies-link]');
+        if(!control && !row) {
+            return;
+        }
         let anchor = row && rowAnchor(row);
         // the native in-place loader fetches its own slice — hand that click over untouched
         if(row && !anchor && isNativeLoaderRow(row)) {
             log('more-replies: native in-place row — left to reddit');
             return;
         }
-        if(!anchor) {
-            // named wrapper without the link, or no wrapper at all: find the link this click belongs
-            // to. Guessing is logged, never silent.
-            const guessed = guessFoldRow(e.target);
+        if(!anchor && control) {
+            // the control is real but its row is not one we know: find the link it belongs to,
+            // without leaving the comment the control sits in (logged — this path is a guess)
+            const guessed = guessFoldRow(control);
             if(guessed) {
                 log('more-replies: unrecognized fold row:', describeEl(guessed));
                 row = guessed;
