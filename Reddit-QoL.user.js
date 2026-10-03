@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Reddit QoL
 // @namespace    http://tampermonkey.net/
-// @version      1.0.1
+// @version      1.0.2
 // @run-at       document-start
 // @description  try to take over the world!
 // @author       Nikita Bilous <nikita@bilous.me>
@@ -1342,8 +1342,26 @@
     const GIF_PRIME_RETRY_MS = 300;
     const GIF_PRIME_SCAN_DEBOUNCE_MS = 200;
 
+    // ONLY a gif may be primed. A real video in a comment is an HLS stream
+    // (shreddit-player src=https://v.redd.it/link/<post>/asset/<id>/HLSPlaylist.m3u8?...) with
+    // player-type="comment_player" and reddit's own poster — it already shows a frame. Priming it
+    // meant assigning that manifest to the <video> (no browser plays HLS natively) plus
+    // preload="auto", which parks the real player on a black frame forever.
+    // A comment gif is `shreddit-player[gif]` with an external-preview.redd.it/<hash>.gif?...&format=mp4
+    // source — a plain mp4 the browser decodes, which is the only reason priming works for it.
+    function isGifPlayer(player) {
+        if(player.hasAttribute('gif')) {
+            return true;
+        }
+        const src = player.getAttribute('src') || '';
+        return /external-preview\.redd\.it\//.test(src) && /\.gif(\?|$)/i.test(src) && /format=mp4/i.test(src);
+    }
+
     // true once the player was handled (primed or nothing left to do), false to retry later
     function primeCommentGif(player) {
+        if(!isGifPlayer(player)) {
+            return true;   // a real video loads itself — never touch it
+        }
         const video = player.shadowRoot && player.shadowRoot.querySelector('video');
         if(!video) {
             return false;   // the async loader has not built the shadow video yet
@@ -1406,7 +1424,13 @@
             }, { threshold: GIF_PRIME_THRESHOLD });
         }
         document.querySelectorAll(GIF_PRIME_SELECTOR).forEach(player => {
-            if(player.dataset.rlGifObserved) {
+            if(player.dataset.rlGifObserved || player.dataset.rlGifSkipped) {
+                return;
+            }
+            if(!isGifPlayer(player)) {
+                // a real comment video: log the variant once, never come back to it
+                player.dataset.rlGifSkipped = '1';
+                log('comment video is not a gif, left to reddit:', (player.getAttribute('src') || '').slice(0, 70));
                 return;
             }
             player.dataset.rlGifObserved = '1';
