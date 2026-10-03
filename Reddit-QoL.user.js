@@ -695,9 +695,23 @@
         return hit;
     }
 
+    // The gallery arrows render inside the gallery-carousel shadow root as
+    // <span slot="nextButton">/<span slot="prevButton"> wrappers. Their clicks retarget to the
+    // host, so `closest` cannot see them, and a capture-phase stopPropagation at the document
+    // would kill the arrow's own handler (our modal opened instead of the carousel advancing).
+    const CAROUSEL_NAV_SELECTOR = '[slot=nextButton], [slot=prevButton]';
+    function isCarouselNavClick(e) {
+        const path = (e.composedPath && e.composedPath()) || [];
+        return path.some(node => node && node.nodeType === 1 && node.closest && node.closest(CAROUSEL_NAV_SELECTOR));
+    }
+
     document.addEventListener('click', e => {
         if(e.ctrlKey) {
             log('ctrl+click — let the link through to', (e.target.closest('a') || {}).href);
+            return;
+        }
+        if(isCarouselNavClick(e)) {
+            log('click on native carousel arrow — passed through to reddit');
             return;
         }
         const hit = interceptable(e.target);
