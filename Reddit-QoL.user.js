@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Reddit QoL
 // @namespace    http://tampermonkey.net/
-// @version      1.0.0
+// @version      1.0.1
 // @run-at       document-start
 // @description  try to take over the world!
 // @author       Nikita Bilous <nikita@bilous.me>
@@ -72,7 +72,10 @@
     // Reddit preloads the full-res copy of post media in a hidden `div.lightboxed-content`
     // (posts and gallery pages). Comment media has no preload, so fall back to URL upgrading.
     function resolveFull(el) {
-        const ctx = el.closest('li[slot], [slot=post-media-container], [slot=comment]') || el.closest('shreddit-post');
+        // the text body is its own scope: without it a post-body image would fall back to the whole
+        // post and could pick up the preload of an unrelated media-container image
+        const ctx = el.closest('li[slot], [slot=post-media-container], [slot=text-body], [slot=comment]') ||
+            el.closest('shreddit-post');
         const preloaded = ctx && ctx.querySelector('div.lightboxed-content img:not([src=""])');
         const direct = preloaded ? (preloaded.currentSrc || preloaded.getAttribute('src')) : null;
         if(direct && isRedditMedia(direct)) {
@@ -129,6 +132,9 @@
                 container.querySelectorAll('img').forEach(add);
             }
         });
+        // images embedded in the post's own markdown body (they sit in [slot=text-body], inside an
+        // <a target="_blank"> — without this the click leaves for a new tab instead of the viewer)
+        document.querySelectorAll('shreddit-post [slot=text-body] img').forEach(add);
         // inline images inside comments (figure.rte-media wraps them in an <a>)
         document.querySelectorAll('shreddit-comment figure.rte-media img, shreddit-comment-parser img').forEach(add);
         log('collected entries:', entries.length, '(skipped', skipCount, 'non-media/duplicate)');
@@ -735,6 +741,7 @@
     // so we sidestep it entirely and run our own.
     const INTERCEPT_SELECTOR = `
         shreddit-post [slot=post-media-container],
+        shreddit-post [slot=text-body] img,
         shreddit-comment figure.rte-media img,
         shreddit-comment-parser img
     `.trim();

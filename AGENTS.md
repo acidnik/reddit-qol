@@ -8,12 +8,18 @@ Run a test: `HEADLESS=0 timeout 240 node tests/test-viewer.mjs` (~1-2 min, needs
 
 You MUST NOT commit/push unless the user says so in the current turn.
 
+`deploy` (in the current turn) = bump the patch version in `Reddit-QoL.user.js` unless a bump is
+spelled out explicitly, commit everything pending and push to `origin/main`. One deploy = one
+published version, so Tampermonkey/Violentmonkey sees an update (the raw URL caches for a few
+minutes after the push).
+
 ## Working with reddit data
 
 - reddit blocks fresh/headless sessions ("Prove your humanity" wall, old.reddit -> 403). Tests get the user's real session via tools/lib/cookies.mjs (cookie expiry in Firefox cookies.sqlite is in MILLISECONDS — divide by 1000 for playwright).
 - Use playwright (HEADLESS=0) or firefox mcp to peek at the real DOM before writing markup-coupled code.
 - Shreddit DOM map:
   - post media container: shreddit-post [slot=post-media-container]
+  - images in a post's own markdown body (post-type="multi_media" posts have NO media container at all): shreddit-post [slot=text-body] img, wrapped in an <a target="_blank"> → without a rule for them the click opens a new tab instead of the viewer
   - visible feed/post preview img: img.non-lightboxed-content
   - full-res preload already in DOM: hidden div.lightboxed-content img (i.redd.it url) — read it instead of re-constructing urls
   - galleries: gallery-carousel li[slot=page-N]; lazy pages have src="" until near viewport — resolve via their preloads
