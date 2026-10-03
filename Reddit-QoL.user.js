@@ -1,7 +1,9 @@
 // ==UserScript==
 // @name         Reddit QoL
 // @namespace    http://tampermonkey.net/
-// @version      1.0.2
+// @version      1.0.3
+// @updateURL    https://github.com/acidnik/reddit-qol/raw/refs/heads/main/Reddit-QoL.user.js
+// @downloadURL  https://github.com/acidnik/reddit-qol/raw/refs/heads/main/Reddit-QoL.user.js
 // @run-at       document-start
 // @description  try to take over the world!
 // @author       Nikita Bilous <nikita@bilous.me>
