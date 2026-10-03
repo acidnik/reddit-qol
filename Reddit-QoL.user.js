@@ -282,6 +282,33 @@
         .rl-sort-sub a:hover {
             background: var(--color-neutral-background-hover, rgba(0, 0, 0, 0.08));
         }
+        /* "N more replies" folds we expand ourselves: the legacy page needs seconds to render,
+           so the link is swapped for a spinner instead of leaving the click without feedback */
+        .rl-fold-loading a,
+        .rl-fold-loading button {
+            display: none;
+        }
+        .rl-fold-loading-label {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            padding: 4px 0;
+            font-size: 12px;
+            color: var(--color-neutral-content-weak, #7a7a7a);
+        }
+        .rl-fold-spinner {
+            width: 12px;
+            height: 12px;
+            border: 2px solid currentColor;
+            border-top-color: transparent;
+            border-radius: 50%;
+            animation: rl-fold-spin 0.7s linear infinite;
+        }
+        @keyframes rl-fold-spin {
+            to {
+                transform: rotate(360deg);
+            }
+        }
         .rl-post-author {
             color: var(--color-neutral-content-weak, #777);
             font-size: inherit;
@@ -956,41 +983,118 @@
     // in a hidden same-origin iframe, harvest the rendered reply subtrees (slot names match the
     // live parent by construction), graft them into the fold position and drop the iframe.
     // Folds inside the grafted content are intercepted again -> arbitrary depth, all in place.
-    function findCommentHref(fromEl) {
-        // the force-legacy anchor may sit in a fold row, in the data-more-replies-link wrapper,
-        // or anywhere in the surrounding partial
+    // The force-legacy link of ONE fold row. reddit ships the same fold in several dresses: the
+    // anchor may be zero-sized with the visible text in a button next to/inside it, and that button
+    // can be wrapped in a faceplate-tracker[noun=more_replies][action=click]. The action attr is
+    // NOT a tell: the native in-place loader (faceplate-partial[src=/svc/shreddit/more-comments/..])
+    // carries it too. Only the row's own markup tells the variants apart. Searching ancestors'
+    // subtrees for the link (the old findCommentHref) grabbed an unrelated fold's anchor on pages
+    // with hundreds of folds and grafted the wrong subthread into the wrong place.
+    function rowAnchor(row) {
+        const a = row.querySelector('a[slot=more-comments-permalink], a.more-comments-link, a[href*="/comment/"][href*="force-legacy-sct"]');
+        if(a && a.href && a.href.includes('force-legacy-sct')) {
+            return a;
+        }
+        // a partial whose src names one comment is the same fold in another dress
+        const src = row.getAttribute && row.getAttribute('src');
+        const m = src && decodeURIComponent(src).match(/comment\/([^/?]+)/);
+        return m ? { href: new URL(`comment/${ m[1] }/?force-legacy-sct=1`, location.origin).href, virtual: true } : null;
+    }
+
+    // compact identity of a node for logs
+    function describeEl(el, len = 200) {
+        if(!el || !el.tagName) {
+            return String(el);
+        }
+        const cls = (el.getAttribute('class') || '').split(' ').slice(0, 3).join('.');
+        const slot = el.getAttribute('slot') ? `[slot=${ el.getAttribute('slot') }]` : '';
+        return `<${ el.tagName.toLowerCase() }${ slot }${ cls ? '.' + cls : '' }> ${ (el.outerHTML || '').replace(/\s+/g, ' ').slice(0, len) }`;
+    }
+
+    // reddit's native in-place loader: the partial fetches its own slice (/svc/shreddit/more-comments)
+    // and swaps it in, so that click must stay untouched, action attr or not
+    function isNativeLoaderRow(row) {
+        const src = row.getAttribute && row.getAttribute('src');
+        return !!(src && /\/svc\/shreddit\/more-comments\//.test(src));
+    }
+
+    // last resort for a variant we do not know: the nearest ancestor of the clicked node whose own
+    // subtree carries a force-legacy link. Bounded and logged — this path is a guess, not a fact.
+    function guessFoldRow(fromEl) {
         let n = fromEl;
-        for(let i = 0; i < 8 && n; i++) {
-            const anchor = n.querySelector && n.querySelector('a[slot=more-comments-permalink], a.more-comments-link, a[href*="/comment/"][href*="force-legacy-sct"]');
-            if(anchor && anchor.href && anchor.href.includes('force-legacy-sct')) {
-                return anchor;
+        for(let i = 0; i < 5 && n; i++, n = n.parentElement) {
+            if(n.querySelector && n.querySelector('a[href*="force-legacy-sct"]')) {
+                return n;
             }
-            const m = n.getAttribute && n.getAttribute('src');
-            if(m && /comment\//.test(decodeURIComponent(m))) {
-                const id = decodeURIComponent(m).match(/comment\/([^/?]+)/);
-                if(id) {
-                    return { href: new URL(`comment/${ id[1] }/?force-legacy-sct=1`, location.origin).href, virtual: true };
-                }
-            }
-            n = n.parentElement;
         }
         return null;
     }
 
-    function graftParent(anchorEl) {
-        // replies must be inserted at the fold's position: before its row, inside the tree slot
-        const row = anchorEl.closest('div.fold-more, div[data-more-replies-link], faceplate-partial');
-        return (row && row.parentElement) || anchorEl.parentElement;
+    // The click may land on the link, on a faceplate-tracker wrapper or on the row itself. The row
+    // must be the OUTER wrapper: div.fold-more holds div[data-more-replies-link], and grafting
+    // inside the inner one breaks fold-more's two-column grid — the absolutely positioned
+    // threadline of the grafted comments then covers the link, so follow-up clicks hit that
+    // overlay (the click "does nothing").
+    function foldRowOf(fromEl) {
+        if(!fromEl || !fromEl.closest) {
+            return null;
+        }
+        return fromEl.closest('div.fold-more, faceplate-partial') ||
+            fromEl.closest('div[data-more-replies-link]');
     }
 
-    // rowHint may be the real anchor, a nav tracker, or anything close to the fold row
-    async function expandViaIframe(rowHint, href, cid) {
-        const row = rowHint.closest && rowHint.closest('div.fold-more, div[data-more-replies-link], faceplate-partial');
-        const container = (row && row.parentElement) || rowHint.parentElement;
-        if(!container) {
-            logErr('no graft container found — doing nothing (no navigation)');
+    // The legacy page needs ~3.5s of client rendering; a silent click reads as "nothing happened".
+    // We hide the link and show a spinner instead, and keep data-rl-busy so a second click on the
+    // same fold is ignored rather than queued up. The target is usually the fold row, but for a
+    // variant we cannot name it is whatever was clicked (a tracker around the link).
+    function setFoldLoading(row, busy) {
+        if(!row || !row.classList) {
             return;
         }
+        if(busy) {
+            row.dataset.rlBusy = '1';
+            row.classList.add('rl-fold-loading');
+            const holder = row.querySelector('div[data-more-replies-link]') || row;
+            const label = document.createElement('span');
+            label.className = 'rl-fold-loading-label';
+            label.innerHTML = '<span class="rl-fold-spinner"></span>Loading…';
+            holder.appendChild(label);
+        } else {
+            delete row.dataset.rlBusy;
+            row.classList.remove('rl-fold-loading');
+            row.querySelectorAll('.rl-fold-loading-label').forEach(n => n.remove());
+        }
+    }
+
+    // Importing an already-rendered custom element re-runs its upgrade in this document, so
+    // <faceplate-number number="34"> renders its value a second time and "34 more replies" turned
+    // into "3434 more replies". Both runs write the same formatted string — keep the last one.
+    function collapseDoubledNumbers(scope) {
+        scope.querySelectorAll('faceplate-number').forEach(n => {
+            const texts = [...n.childNodes].filter(c => c.nodeType === Node.TEXT_NODE && c.nodeValue.trim());
+            texts.pop();
+            texts.forEach(t => t.remove());
+        });
+    }
+
+    // rowHint is the fold row, or — for a variant we could not name — whatever was clicked
+    async function expandViaIframe(rowHint, href, cid) {
+        const row = foldRowOf(rowHint);
+        // graft position: as a SIBLING of the fold row, inside the tree slot; a nameless variant
+        // has no wrapper to be a sibling of, so fall back to the clicked node's parent (the
+        // placement the feature used before the row check existed — odd beats a dead click)
+        const slot = (row && row.parentElement) || (rowHint && rowHint.parentElement);
+        if(!slot) {
+            logErr('no tree slot for', cid, '- doing nothing (no navigation)');
+            return;
+        }
+        // what carries the loading state: the fold row, or the clicked link itself
+        const stateful = row || rowHint;
+        if(stateful.dataset && stateful.dataset.rlBusy === '1') {
+            log('more-replies: fold already loading — click ignored');
+            return;
+        }
+        setFoldLoading(stateful, true);
         const iframe = document.createElement('iframe');
         iframe.src = href;
         iframe.style.cssText = 'position:fixed;left:-9999px;top:0;width:1280px;height:1000px;';
@@ -1011,64 +1115,103 @@
             }
         }
         const root = idoc && idoc.querySelector(`shreddit-comment[thingid="t1_${ cid }"]`);
-        const replies = root ? [...root.querySelectorAll('shreddit-comment')].filter(r =>
-            (r.getAttribute('slot') || '').startsWith(`children-t1_${ cid }`)) : [];
+        const rooted = root ? [...root.querySelectorAll('shreddit-comment')] : [];
+        const present = id => !!document.querySelector(`shreddit-comment[thingid="${ id }"]`);
+        // the legacy URL is stateless: loading it again returns the very same slice, so grafting
+        // blindly would duplicate whole subtrees. Only take comments the page does not have yet.
+        const replies = rooted.filter(r =>
+            (r.getAttribute('slot') || '').startsWith(`children-t1_${ cid }`) &&
+            !present(r.getAttribute('thingid')));
         if(!replies.length) {
-            logErr('iframe harvest empty for', cid, '- doing nothing (no navigation)');
             iframe.remove();
+            setFoldLoading(stateful, false);
+            if(!rooted.length) {
+                logErr('iframe render failed for', cid, '- keeping the fold for another try');
+                return;
+            }
+            // the slice is already on the page: this fold has nothing left to give, and leaving
+            // the stale link behind only invites a click that would do nothing
+            log('more-replies: no new replies for', cid, '- dropping the spent fold');
+            removeSpent(stateful);
             return;
         }
         const frag = document.createDocumentFragment();
+        const grafts = [];
         // importNode (clone, NOT adopt): listeners from the iframe context must not come along —
         // cloned custom elements re-register in this document and faceplate-partial machinery
         // re-attaches, so "+N more replies" buttons inside transplanted replies stay alive
-        replies.forEach(r => frag.appendChild(document.importNode(r, true)));
-        // adopted folds carry listeners bound in the iframe context; after iframe removal those
-        // are dead (click = silent nothing). Stamp them so the click interceptor owns them.
+        replies.forEach(r => {
+            const clone = document.importNode(r, true);
+            grafts.push(clone);
+            frag.appendChild(clone);
+        });
+        // folds inside the grafted content carried listeners bound in the iframe context; after
+        // iframe removal those are dead (click = silent nothing). Stamp them so the click
+        // interceptor owns them.
         frag.querySelectorAll('div.fold-more').forEach(f => { f.dataset.rlFromIframe = '1'; });
-        container.insertBefore(frag, row);
-        // if the iframe had a residual fold (more batches left), KEEP the original live fold —
-        // it points to the same thread root and our interceptor will load the next batch;
-        // otherwise the thread is complete and the fold goes away
-        const residual = [...root.querySelectorAll('div.fold-more')].find(f =>
-            f.closest('shreddit-comment') === root);
-        if(!residual) {
-            row.remove();
-        }
+        slot.insertBefore(frag, row);
+        // the fold is spent — its batch is on the page, and the same URL yields nothing new.
+        // Dropping it also stops the row from looking stuck after a finished load.
+        removeSpent(stateful);
         iframe.remove();
         log('subthread grafted in place:', replies.length, 'replies for', cid);
+        // the clones only upgrade (and render their numbers a second time) at the next microtask
+        // checkpoint, so the doubled text shows up right after this task finishes
+        await Promise.resolve();
+        grafts.forEach(collapseDoubledNumbers);
+    }
+
+    // A fold we expanded is spent and its row goes away — but only a row we recognize as a fold
+    // wrapper. For an unnamed variant the clicked node is dropped instead (it is the link itself),
+    // and if even that looks unsafe the spinner is simply cleared.
+    function removeSpent(stateful) {
+        if(foldRowOf(stateful)) {
+            stateful.remove();
+        } else if(stateful.matches && stateful.matches('faceplate-tracker, button, a')) {
+            stateful.remove();
+        } else {
+            setFoldLoading(stateful, false);
+        }
     }
 
     window.addEventListener('click', e => {
         if(e.button !== 0 || e.ctrlKey || e.metaKey || e.shiftKey || e.altKey) {
             return;
         }
-        // the tracked-navigation variant: faceplate-tracker[noun=more_replies] with an action
-        // attribute navigates fully; plain in-place partial buttons (no action) expand natively
-        const tracker = e.target.closest && e.target.closest('faceplate-tracker[noun="more_replies"]');
-        const a = e.target.closest && e.target.closest('a[slot=more-comments-permalink], a.more-comments-link');
-        const navTracker = tracker && tracker.hasAttribute('action');
-        if(!a && !navTracker) {
+        // the row that owns this click, whatever dress reddit ships it in
+        let row = e.target.closest && e.target.closest('div.fold-more, faceplate-partial, div[data-more-replies-link]');
+        let anchor = row && rowAnchor(row);
+        // the native in-place loader fetches its own slice — hand that click over untouched
+        if(row && !anchor && isNativeLoaderRow(row)) {
+            log('more-replies: native in-place row — left to reddit');
             return;
         }
-        if(tracker && !navTracker && !a) {
-            log('plain tracker button — native in-place loader');
-            return;
-        }
-        const anchorEl = a || findCommentHref(navTracker || e.target.closest('div.fold-more, faceplate-partial, shreddit-async-loader') || tracker);
-        const url = new URL(anchorEl && anchorEl.href, location.origin);
-        if(!anchorEl || !url.searchParams.has('force-legacy-sct')) {
-            if(navTracker) {
-                logErr('nav tracker, no force-legacy anchor found — doing nothing');
+        if(!anchor) {
+            // named wrapper without the link, or no wrapper at all: find the link this click belongs
+            // to. Guessing is logged, never silent.
+            const guessed = guessFoldRow(e.target);
+            if(guessed) {
+                log('more-replies: unrecognized fold row:', describeEl(guessed));
+                row = guessed;
+                anchor = rowAnchor(row);
             }
+        }
+        if(!anchor) {
+            return;
+        }
+        const url = new URL(anchor.href, location.origin);
+        if(!url.searchParams.has('force-legacy-sct')) {
+            log('more-replies: row link has no force-legacy-sct — left to reddit');
             return;
         }
         // our expansion owns this click — no navigation, no dead iframe listeners
         e.preventDefault();
         e.stopImmediatePropagation();
         const cid = (url.pathname.match(/comment\/([^/?]+)/) || [])[1];
-        const rowHint = (anchorEl && anchorEl.closest) ? anchorEl : (navTracker || e.target);
+        const rowHint = row || e.target;
         expandViaIframe(rowHint, url.href, cid).catch(err => {
+            // put the link back so the fold is clickable again instead of spinning forever
+            setFoldLoading(foldRowOf(rowHint) || rowHint, false);
             logErr('iframe expansion failed:', err.message, '- doing nothing');
         });
     }, true);
