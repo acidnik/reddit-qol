@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Reddit QoL
 // @namespace    http://tampermonkey.net/
-// @version      1.0.3
+// @version      1.0.4
 // @updateURL    https://github.com/acidnik/reddit-qol/raw/refs/heads/main/Reddit-QoL.user.js
 // @downloadURL  https://github.com/acidnik/reddit-qol/raw/refs/heads/main/Reddit-QoL.user.js
 // @run-at       document-start
@@ -765,6 +765,32 @@
         return hit;
     }
 
+    // Which image did the user actually click? A post gallery matches the click through its
+    // `[slot=post-media-container]` wrapper, and taking `hit.querySelector('img')` from there meant
+    // the FIRST gallery page always won: after swiping to page 2 a click still opened image 1.
+    // Order: the img under the cursor, the img of the gallery page that was clicked, the page that
+    // is visible right now, and only then whatever img the container starts with.
+    function clickedImage(hit, target) {
+        if(hit.tagName === 'IMG') {
+            return hit;
+        }
+        const clicked = target && target.closest && target.closest('img');
+        if(clicked) {
+            return clicked;
+        }
+        const page = target && target.closest && target.closest('li[slot^=page-]');
+        if(page && page.querySelector('img')) {
+            return page.querySelector('img');
+        }
+        const visible = [...hit.querySelectorAll('img')].find(img => {
+            const r = img.getBoundingClientRect();
+            const li = img.closest('li[slot^=page-]');
+            // offscreen carousel pages keep their <li> at visibility: hidden
+            return r.width > 0 && r.height > 0 && (!li || getComputedStyle(li).visibility === 'visible');
+        });
+        return visible || hit.querySelector('img');
+    }
+
     // The gallery arrows render inside the gallery-carousel shadow root as
     // <span slot="nextButton">/<span slot="prevButton"> wrappers. Their clicks retarget to the
     // host, so `closest` cannot see them, and a capture-phase stopPropagation at the document
@@ -789,7 +815,7 @@
             return;
         }
         // second video line of defense: the container itself holds a player
-        const el = hit.tagName === 'IMG' ? hit : hit.querySelector('img');
+        const el = clickedImage(hit, e.target);
         if(!el || hit.querySelector('shreddit-player, shreddit-player-2, shreddit-video, video')) {
             log('video/empty container — passed through', hit.tagName);
             return;
@@ -797,12 +823,24 @@
         e.preventDefault();
         e.stopPropagation();
         log('intercepted click on', el.tagName, (el.currentSrc || el.src || '').slice(0, 60));
-        // index inside the freshly collected set; gallery pages map by their preview img
+        // index inside the freshly collected set
         const collected = collectEntries();
         let idx = collected.findIndex(entry => entry.el === el);
         if(idx === -1) {
+            // a lazy gallery page keeps its preview img empty and the collector took the hidden
+            // full-res preload instead: the two still live in the same <li slot=page-N>
+            const page = el.closest && el.closest('li[slot^=page-]');
+            if(page) {
+                idx = collected.findIndex(entry => entry.el.closest && entry.el.closest('li[slot^=page-]') === page);
+            }
+        }
+        if(idx === -1) {
+            // by src, but never on an empty key: that matched the first entry with an empty src,
+            // i.e. image 1 of a gallery the user had already swiped away from
             const srcKey = (el.currentSrc || el.src || '').split('?')[0];
-            idx = collected.findIndex(entry => ((entry.el.currentSrc || entry.el.src || '').split('?')[0]) === srcKey);
+            if(srcKey) {
+                idx = collected.findIndex(entry => ((entry.el.currentSrc || entry.el.src || '').split('?')[0]) === srcKey);
+            }
         }
         if(idx === -1) {
             log('clicked media not in collection, appending');
