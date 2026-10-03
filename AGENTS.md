@@ -21,4 +21,16 @@ You MUST NOT commit/push unless the user says so in the current turn.
   - url upgrade: preview.redd.it/<slug>-v0-<id>.<ext> -> i.redd.it/<id>.<ext>
   - built-in lightbox: blocks the "real" one with a document-level capture-phase click listener
 
+## "More replies" / comments DOM specifics (learned the hard way)
+
+- TWO render paths for "N more replies":
+    - native in-place loader: button inside faceplate-partial[src=/svc/shreddit/more-comments/r/<sub>/t3_<postid>?sort=CONFIDENCE&startingDepth=N&commentParentPositions=...]  — expands natively, batches can be large; DO NOT intercept buttons without the action attr
+    - deep/legacy: div.fold-more + a[slot=more-comments-permalink] with href ?force-legacy-sct=1 (in ff the anchor is often hidden w=0; the clickable is a BUTTON wrapped in faceplate-tracker[noun=more_replies][action=click] — tracked FULL navigation)
+- expansion mechanism (userscript): hidden same-origin iframe with the legacy url (~3.5s client render), harvest the root's replies by slot prefix `children-t1_<cid>`, graft before the fold row; if the thread has more batches the fold stays and gets clicked again; slot names are deterministic and match the live parent by construction
+- transplant MUST use document.importNode (clone) — adoptNode carries iframe-bound listeners; after iframe.remove() they become dead closures: clicks silently do nothing. Cloned custom elements re-register in the main document, so faceplate-partial inside transplanted content comes alive
+- click interception must run BEFORE reddit's handlers: `// @run-at document-start` + window-capture listener + stopImmediatePropagation (the faceplate-tracker capture listener registered earlier would otherwise stopPropagation-kill ours, and the full navigation wins); tampermonkey injects the script twice — dedupe with window.__rlLoaded at the top of the closure
+- any exception thrown before preventDefault inside the click hook = untracked navigation; guard every step, and on failure do NOTHING (never fall back to navigation silently)
+- comment identity: shreddit-comment[thingid=t1_<id>] (attr `thingid`, not `id`); reply slots: children-t1_<parent-id>-N; nested comments render as details[open] > summary + div children container
+- headless chromium tests often can't reach deep folds: they live below the viewport — scroll-and-recheck in a loop; "43 more replies"-style buttons may exist only in the real ff DOM after navigation
+
 use excessive logging to be able to solve complicated cases, ask user to reproduce and provide logs
