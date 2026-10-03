@@ -42,27 +42,28 @@
         }
     }
 
-    // preview.redd.it URLs carry the file id in the path suffix: "<slug>-v0-<id>.<ext>".
-    // The full-res original lives on i.redd.it/<id>.<ext>.
+    // Only preview.redd.it names map onto an i.redd.it original, and the id is the last path
+    // segment: "<slug>-v0-<id>.<ext>" for most posts, but a bare "<id>.<ext>" for images
+    // uploaded in a comment (clipboard/composer) — the slug is simply absent there.
     function upgradeToFull(src) {
         try {
             const u = new URL(src, location.origin);
             if(u.host === 'i.redd.it') {
                 return u.href;
             }
-            const m = u.pathname.match(/^(?:.*)-v0-([^/]+)$/);
-            if(m && u.host.endsWith('redd.it')) {
-                const full = new URL(`https://i.redd.it/${ m[1] }`);
-                log('upgraded source to full', src.slice(0, 60), '->', full.href);
-                return full.href;
+            if(u.host !== 'preview.redd.it') {
+                // external-preview.redd.it thumbs and off-site images are signed: any param edit
+                // breaks the signature (403), so hand the URL over exactly as the page got it
+                return u.href;
             }
-            // fixed thumbs and external images: strip sizing params so the viewer gets the biggest render
-            u.searchParams.delete('width');
-            u.searchParams.delete('height');
-            u.searchParams.delete('crop');
-            u.searchParams.delete('frame');
-            u.searchParams.delete('auto');
-            return u.href;
+            const segment = u.pathname.split('/').pop() || '';
+            const m = segment.match(/^(?:.*-v0-)?([A-Za-z0-9]+)\.([A-Za-z0-9]+)$/);
+            if(!m) {
+                return u.href;
+            }
+            const full = new URL(`https://i.redd.it/${ m[1] }.${ m[2] }`);
+            log('upgraded source to full', src.slice(0, 60), '->', full.href);
+            return full.href;
         } catch {
             return src;
         }
@@ -96,7 +97,7 @@
                 return;
             }
             seen.add(key);
-            entries.push({ el, url: resolveFull(el), post: el.closest('shreddit-post') });
+            entries.push({ el, url: resolveFull(el), src: raw, post: el.closest('shreddit-post') });
         }
         // feed + top post: walk media containers so galleries keep their page order
         document.querySelectorAll('shreddit-post').forEach(post => {
@@ -423,6 +424,24 @@
             applyTransform();
             log('loaded', imgEl.naturalWidth, 'x', imgEl.naturalHeight);
         };
+        // the full-res guess can 404 (a preview id with no i.redd.it twin, a gate, ...): retry the
+        // source the page itself used, exactly once per entry. Errors from a previous image that
+        // arrive after a nav must not hijack the current one.
+        imgEl.onerror = () => {
+            const entry = entries[index];
+            if(!entry || imgEl.getAttribute('src') !== entry.url) {
+                logErr('stale image load error, ignored');
+                return;
+            }
+            if(entry.src && entry.src !== entry.url && !entry.fallbackTried) {
+                entry.fallbackTried = true;
+                log('full-res failed, retrying the page source', entry.src.slice(0, 80));
+                imgEl.src = entry.src;
+                return;
+            }
+            logErr('viewer image failed to load:', entry.url.slice(0, 120));
+            dimsEl.textContent = 'failed to load';
+        };
         overlay.querySelector('.rl-viewer-close').addEventListener('click', closeViewer);
         prevBtn.addEventListener('click', () => nav(-1));
         nextBtn.addEventListener('click', () => nav(1));
@@ -736,7 +755,7 @@
         }
         if(idx === -1) {
             log('clicked media not in collection, appending');
-            collected.push({ el, url: resolveFull(el), post: el.closest('shreddit-post') });
+            collected.push({ el, url: resolveFull(el), src: (el.currentSrc || el.src || ''), post: el.closest('shreddit-post') });
             idx = collected.length - 1;
         }
         entries = collected;

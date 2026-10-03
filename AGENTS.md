@@ -18,7 +18,8 @@ You MUST NOT commit/push unless the user says so in the current turn.
   - full-res preload already in DOM: hidden div.lightboxed-content img (i.redd.it url) — read it instead of re-constructing urls
   - galleries: gallery-carousel li[slot=page-N]; lazy pages have src="" until near viewport — resolve via their preloads
   - comment inline media: shreddit-comment figure.rte-media > a > img
-  - url upgrade: preview.redd.it/<slug>-v0-<id>.<ext> -> i.redd.it/<id>.<ext>
+  - url upgrade: preview.redd.it/<slug>-v0-<id>.<ext> -> i.redd.it/<id>.<ext>; composer/clipboard uploads (comment images) drop the slug -> preview.redd.it/<id>.<ext>, same mapping, take the LAST path segment
+  - never edit params of a signed reddit media url: preview/external-preview carry `s=` over the exact query, so stripping width/crop (or even `s` staying put but width removed) yields 403. Only i.redd.it originals are param-free; for anything else hand the url over untouched and keep the page's own src as a viewer fallback (imgEl.onerror)
   - built-in lightbox: blocks the "real" one with a document-level capture-phase click listener
 
 ## "More replies" / comments DOM specifics (learned the hard way)
